@@ -5,7 +5,7 @@ const fs = require('fs');
 
 // --- APNI DETAILS YAHAN DAALEIN ---
 const TOKEN = '8896652566:AAGS9oPW8sRZ-5964-Js4whQdYGPNuD443Q'; 
-const MAIN_OWNER_ID = 1834775993; // Aapka Main Owner ID (Yehi sabko admin bana/hata sakega)
+const MAIN_OWNER_ID = 1834775993; // Aapka Main Owner ID
 // ----------------------------------
 
 const PORT = process.env.PORT || 3000;
@@ -27,7 +27,7 @@ function saveKeys(keys) {
 }
 
 function loadAdmins() {
-    let admins = [MAIN_OWNER_ID]; // Main owner hamesha admin rahega
+    let admins = [MAIN_OWNER_ID];
     if (fs.existsSync(ADMINS_FILE)) {
         const savedAdmins = JSON.parse(fs.readFileSync(ADMINS_FILE));
         admins = [...new Set([...admins, ...savedAdmins])];
@@ -36,7 +36,6 @@ function loadAdmins() {
 }
 
 function saveAdmins(admins) {
-    // Main owner ko chhod kar baki save karein
     const filtered = admins.filter(id => id !== MAIN_OWNER_ID);
     fs.writeFileSync(ADMINS_FILE, JSON.stringify(filtered, null, 2));
 }
@@ -60,8 +59,8 @@ bot.onText(/\/admin/, (msg) => {
 
     let helpText = `👑 **M1 CHEATS ADMIN PANEL** 👑\n\n`;
     helpText += `🔑 **Key Management:**\n`;
-    helpText += `• \`/gen\` - 30 Days ki default key banayein\n`;
-    helpText += `• \`/gen 7\` - 7 Days ki key banayein (Example)\n`;
+    helpText += `• \`/gen\` - 30 Days & 1 Device ki key\n`;
+    helpText += `• \`/gen [Days] [Devices]\` - (Ex: \`/gen 7 1\`) \n`;
     helpText += `• \`/del [KEY]\` - Koi bhi key delete karein\n\n`;
 
     if (chatId === MAIN_OWNER_ID) {
@@ -74,12 +73,13 @@ bot.onText(/\/admin/, (msg) => {
     bot.sendMessage(chatId, helpText, { parse_mode: 'Markdown' });
 });
 
-// 2. Key Generation (/gen [days])
-bot.onText(/\/gen(?: (\d+))?/, (msg, match) => {
+// 2. Key Generation (/gen [days] [maxDevices])
+bot.onText(/\/gen(?: (\d+))?(?: (\d+))?/, (msg, match) => {
     const chatId = msg.from.id;
     if (!isAdmin(chatId)) return bot.sendMessage(chatId, "❌ You are not authorized!");
 
     const days = match[1] ? parseInt(match[1]) : 30;
+    const maxDevices = match[2] ? parseInt(match[2]) : 1; // Default 1 device limit
     const keys = loadKeys();
     
     const randomKey = 'M1-' + Math.random().toString(36).substring(2, 6).toUpperCase() + 
@@ -88,10 +88,15 @@ bot.onText(/\/gen(?: (\d+))?/, (msg, match) => {
 
     const expiryTime = Date.now() + (days * 24 * 60 * 60 * 1000);
 
-    keys[randomKey] = { expiry: expiryTime, createdBy: chatId };
+    keys[randomKey] = { 
+        expiry: expiryTime, 
+        maxDevices: maxDevices, 
+        devices: [], 
+        createdBy: chatId 
+    };
     saveKeys(keys);
 
-    bot.sendMessage(chatId, `✅ **Key Generated Successfully!**\n\n🔑 Key: \`${randomKey}\`\n⏳ Validity: ${days} Days`, { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, `✅ **Key Generated Successfully!**\n\n🔑 Key: \`${randomKey}\`\n⏳ Validity: ${days} Days\n📱 Max Devices: ${maxDevices}`, { parse_mode: 'Markdown' });
 });
 
 // 3. Delete Key (/del [key])
@@ -157,10 +162,11 @@ bot.onText(/\/adminlist/, (msg) => {
     bot.sendMessage(chatId, listMsg, { parse_mode: 'Markdown' });
 });
 
-// --- ANDROID APP VERIFICATION API ---
+// --- ANDROID APP VERIFICATION API (With Device Binding) ---
 app.post('/verify', (req, res) => {
-    const { key } = req.body;
+    const { key, deviceId } = req.body;
     if (!key) return res.json({ success: false, message: "Key is required!" });
+    if (!deviceId) return res.json({ success: false, message: "Device ID is missing!" });
 
     const keys = loadKeys();
     const keyData = keys[key];
@@ -172,6 +178,24 @@ app.post('/verify', (req, res) => {
     if (Date.now() > keyData.expiry) {
         return res.json({ success: false, message: "License key has expired!" });
     }
+
+    // Ensure backward compatibility for old keys that might not have 'devices' array
+    if (!keyData.devices) keyData.devices = [];
+    if (!keyData.maxDevices) keyData.maxDevices = 1;
+
+    // Check if device is already registered with this key
+    if (keyData.devices.includes(deviceId)) {
+        return res.json({ success: true, message: "OK" });
+    }
+
+    // Check if device limit has been reached
+    if (keyData.devices.length >= keyData.maxDevices) {
+        return res.json({ success: false, message: "Device limit exceeded for this key!" });
+    }
+
+    // Register new device to this key
+    keyData.devices.push(deviceId);
+    saveKeys(keys);
 
     res.json({ success: true, message: "OK" });
 });
