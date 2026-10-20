@@ -46,6 +46,11 @@ function isAdmin(userId) {
     return admins.includes(userId);
 }
 
+// --- ROOT ROUTE (Render & UptimeRobot ke liye zaroori) ---
+app.get('/', (req, res) => {
+    res.send('Hy2droid License Server is running successfully 🚀');
+});
+
 // --- TELEGRAM BOT COMMANDS ---
 
 // 1. /admin Dashboard & Help Panel
@@ -63,7 +68,7 @@ bot.onText(/\/admin/, (msg) => {
         helpText += `🛡️ **Owner Controls (Aapke liye):**\n`;
         helpText += `• \`/addadmin [USER_ID]\` - Naya Reseller/Admin banayein\n`;
         helpText += `• \`/removeadmin [USER_ID]\` - Admin hatayein\n`;
-        helpText += `• \`/adminlist` - Sabhi admins ki list dekhein\n`;
+        helpText += `• \`/adminlist\` - Sabhi admins ki list dekhein\n`;
     }
 
     bot.sendMessage(chatId, helpText, { parse_mode: 'Markdown' });
