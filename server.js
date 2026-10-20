@@ -52,22 +52,52 @@ app.get('/', (req, res) => {
 
 // --- TELEGRAM BOT COMMANDS ---
 
-// 1. /admin Dashboard & Help Panel
+// 0. Start Command (Role-based restriction)
+bot.onText(/\/start/, (msg) => {
+    const chatId = msg.from.id;
+    
+    if (!isAdmin(chatId)) {
+        return bot.sendMessage(
+            chatId, 
+            "❌ **Access Denied!**\n\nYou are not allowed to use this bot. Contact the owner to get access.", 
+            { parse_mode: 'Markdown' }
+        );
+    }
+
+    let welcomeText = `🚀 **Welcome to M1 CHEATS License Hub**\n\n`;
+    welcomeText += `Aap authorized reseller/admin hain. Niche diye gaye commands use karein:\n\n`;
+    welcomeText += `🔑 \`/gen [Days] [Devices]\` - New Key banayein (Ex: \`/gen 30 1\`)\n`;
+    welcomeText += `📋 \`/listkeys\` - Sabhi keys aur unki details dekhein\n`;
+    welcomeText += `🚫 \`/block [KEY]\` - Kisi key ko ban/disable karein\n`;
+    welcomeText += `▶️ \`/unblock [KEY]\` - Block ki hui key ko wapas chalu karein\n`;
+    welcomeText += `🗑️ \`/del [KEY]\` - Key ko permanent delete karein\n`;
+
+    if (chatId === MAIN_OWNER_ID) {
+        welcomeText += `\n👑 **Owner Special Controls:**\n`;
+        welcomeText += `• \`/addadmin [ID]\` - Naya Admin banayein\n`;
+        welcomeText += `• \`/removeadmin [ID]\` - Admin hatayein\n`;
+        welcomeText += `• \`/adminlist\` - Admins ki list dekhein\n`;
+    }
+
+    bot.sendMessage(chatId, welcomeText, { parse_mode: 'Markdown' });
+});
+
+// 1. /admin Dashboard Panel
 bot.onText(/\/admin/, (msg) => {
     const chatId = msg.from.id;
     if (!isAdmin(chatId)) return bot.sendMessage(chatId, "❌ You are not authorized!");
 
     let helpText = `👑 **M1 CHEATS ADMIN PANEL** 👑\n\n`;
-    helpText += `🔑 **Key Management:**\n`;
-    helpText += `• \`/gen\` - 30 Days & 1 Device ki key\n`;
-    helpText += `• \`/gen [Days] [Devices]\` - (Ex: \`/gen 7 1\`) \n`;
-    helpText += `• \`/del [KEY]\` - Koi bhi key delete karein\n\n`;
+    helpText += `🔑 **Key Commands:**\n`;
+    helpText += `• \`/gen 30 1\` - 30 Days & 1 Device key\n`;
+    helpText += `• \`/listkeys\` - View all generated keys & usage\n`;
+    helpText += `• \`/block [KEY]\` - Pause/Block a key\n`;
+    helpText += `• \`/unblock [KEY]\` - Resume a blocked key\n`;
+    helpText += `• \`/del [KEY]\` - Delete a key\n\n`;
 
     if (chatId === MAIN_OWNER_ID) {
-        helpText += `🛡️ **Owner Controls (Aapke liye):**\n`;
-        helpText += `• \`/addadmin [USER_ID]\` - Naya Reseller/Admin banayein\n`;
-        helpText += `• \`/removeadmin [USER_ID]\` - Admin hatayein\n`;
-        helpText += `• \`/adminlist\` - Sabhi admins ki list dekhein\n`;
+        helpText += `🛡️ **Owner Controls:**\n`;
+        helpText += `• \`/addadmin [ID]\`\n• \`/removeadmin [ID]\`\n• \`/adminlist\``;
     }
 
     bot.sendMessage(chatId, helpText, { parse_mode: 'Markdown' });
@@ -79,7 +109,7 @@ bot.onText(/\/gen(?: (\d+))?(?: (\d+))?/, (msg, match) => {
     if (!isAdmin(chatId)) return bot.sendMessage(chatId, "❌ You are not authorized!");
 
     const days = match[1] ? parseInt(match[1]) : 30;
-    const maxDevices = match[2] ? parseInt(match[2]) : 1; // Default 1 device limit
+    const maxDevices = match[2] ? parseInt(match[2]) : 1;
     const keys = loadKeys();
     
     const randomKey = 'M1-' + Math.random().toString(36).substring(2, 6).toUpperCase() + 
@@ -92,14 +122,81 @@ bot.onText(/\/gen(?: (\d+))?(?: (\d+))?/, (msg, match) => {
         expiry: expiryTime, 
         maxDevices: maxDevices, 
         devices: [], 
+        status: 'active', // active, blocked
         createdBy: chatId 
     };
     saveKeys(keys);
 
-    bot.sendMessage(chatId, `✅ **Key Generated Successfully!**\n\n🔑 Key: \`${randomKey}\`\n⏳ Validity: ${days} Days\n📱 Max Devices: ${maxDevices}`, { parse_mode: 'Markdown' });
+    let resMsg = `✅ **Key Generated Successfully!**\n\n`;
+    resMsg += `🔑 Key: \`${randomKey}\`\n`;
+    resMsg += `⏳ Validity: ${days} Days\n`;
+    resMsg += `📱 Max Devices: ${maxDevices}\n`;
+    resMsg += `💡 Example to use in app: Copy this key and paste it on login screen.`;
+
+    bot.sendMessage(chatId, resMsg, { parse_mode: 'Markdown' });
 });
 
-// 3. Delete Key (/del [key])
+// 3. List All Keys with Status (`/listkeys`)
+bot.onText(/\/listkeys/, (msg) => {
+    const chatId = msg.from.id;
+    if (!isAdmin(chatId)) return bot.sendMessage(chatId, "❌ You are not authorized!");
+
+    const keys = loadKeys();
+    const keyList = Object.keys(keys);
+
+    if (keyList.length === 0) {
+        return bot.sendMessage(chatId, "📂 Database me abhi koi key nahi hai.");
+    }
+
+    let msgText = `📋 **ALL GENERATED KEYS (${keyList.length}):**\n\n`;
+    keyList.forEach((k, index) => {
+        const data = keys[k];
+        const statusIcon = data.status === 'blocked' ? '🔴 BLOCKED' : (Date.now() > data.expiry ? '⏳ EXPIRED' : '🟢 ACTIVE');
+        const timeLeft = Math.max(0, Math.ceil((data.expiry - Date.now()) / (1000 * 60 * 60 * 24)));
+        
+        msgText += `${index + 1}. \`${k}\`\n`;
+        msgText += `   Status: ${statusIcon} | Left: ${timeLeft}d\n`;
+        msgText += `   Devices Used: ${data.devices.length}/${data.maxDevices}\n\n`;
+    });
+
+    bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
+});
+
+// 4. Block/Pause Key (`/block [key]`)
+bot.onText(/\/block (.+)/, (msg, match) => {
+    const chatId = msg.from.id;
+    if (!isAdmin(chatId)) return bot.sendMessage(chatId, "❌ You are not authorized!");
+
+    const keyToBlock = match[1].trim();
+    const keys = loadKeys();
+
+    if (keys[keyToBlock]) {
+        keys[keyToBlock].status = 'blocked';
+        saveKeys(keys);
+        bot.sendMessage(chatId, `🚫 Key \`${keyToBlock}\` has been **blocked/paused** successfully!`, { parse_mode: 'Markdown' });
+    } else {
+        bot.sendMessage(chatId, `⚠️ Key not found.`);
+    }
+});
+
+// 5. Unblock Key (`/unblock [key]`)
+bot.onText(/\/unblock (.+)/, (msg, match) => {
+    const chatId = msg.from.id;
+    if (!isAdmin(chatId)) return bot.sendMessage(chatId, "❌ You are not authorized!");
+
+    const keyToUnblock = match[1].trim();
+    const keys = loadKeys();
+
+    if (keys[keyToUnblock]) {
+        keys[keyToUnblock].status = 'active';
+        saveKeys(keys);
+        bot.sendMessage(chatId, `✅ Key \`${keyToUnblock}\` has been **unblocked** successfully!`, { parse_mode: 'Markdown' });
+    } else {
+        bot.sendMessage(chatId, `⚠️ Key not found.`);
+    }
+});
+
+// 6. Delete Key (/del [key])
 bot.onText(/\/del (.+)/, (msg, match) => {
     const chatId = msg.from.id;
     if (!isAdmin(chatId)) return bot.sendMessage(chatId, "❌ You are not authorized!");
@@ -116,7 +213,7 @@ bot.onText(/\/del (.+)/, (msg, match) => {
     }
 });
 
-// 4. Add Admin / Reseller (Only Main Owner)
+// 7. Add Admin / Reseller (Only Main Owner)
 bot.onText(/\/addadmin (\d+)/, (msg, match) => {
     const chatId = msg.from.id;
     if (chatId !== MAIN_OWNER_ID) return bot.sendMessage(chatId, "❌ Only Main Owner can add admins!");
@@ -133,7 +230,7 @@ bot.onText(/\/addadmin (\d+)/, (msg, match) => {
     }
 });
 
-// 5. Remove Admin (Only Main Owner)
+// 8. Remove Admin (Only Main Owner)
 bot.onText(/\/removeadmin (\d+)/, (msg, match) => {
     const chatId = msg.from.id;
     if (chatId !== MAIN_OWNER_ID) return bot.sendMessage(chatId, "❌ Only Main Owner can remove admins!");
@@ -148,7 +245,7 @@ bot.onText(/\/removeadmin (\d+)/, (msg, match) => {
     bot.sendMessage(chatId, `🗑️ User \`${targetId}\` removed from admins list.`, { parse_mode: 'Markdown' });
 });
 
-// 6. Admin List (Only Main Owner)
+// 9. Admin List (Only Main Owner)
 bot.onText(/\/adminlist/, (msg) => {
     const chatId = msg.from.id;
     if (chatId !== MAIN_OWNER_ID) return bot.sendMessage(chatId, "❌ Only Main Owner can view admin list!");
@@ -162,7 +259,7 @@ bot.onText(/\/adminlist/, (msg) => {
     bot.sendMessage(chatId, listMsg, { parse_mode: 'Markdown' });
 });
 
-// --- ANDROID APP VERIFICATION API (With Device Binding) ---
+// --- ANDROID APP VERIFICATION API ---
 app.post('/verify', (req, res) => {
     const { key, deviceId } = req.body;
     if (!key) return res.json({ success: false, message: "Key is required!" });
@@ -175,25 +272,30 @@ app.post('/verify', (req, res) => {
         return res.json({ success: false, message: "Invalid license key!" });
     }
 
+    // Check if key is blocked by admin/owner
+    if (keyData.status === 'blocked') {
+        return res.json({ success: false, message: "This license key has been blocked by admin!" });
+    }
+
+    // Check if key is expired
     if (Date.now() > keyData.expiry) {
         return res.json({ success: false, message: "License key has expired!" });
     }
 
-    // Ensure backward compatibility for old keys that might not have 'devices' array
     if (!keyData.devices) keyData.devices = [];
     if (!keyData.maxDevices) keyData.maxDevices = 1;
 
-    // Check if device is already registered with this key
+    // Check if device already registered
     if (keyData.devices.includes(deviceId)) {
         return res.json({ success: true, message: "OK" });
     }
 
-    // Check if device limit has been reached
+    // Check device limit exceeded
     if (keyData.devices.length >= keyData.maxDevices) {
         return res.json({ success: false, message: "Device limit exceeded for this key!" });
     }
 
-    // Register new device to this key
+    // Register new device
     keyData.devices.push(deviceId);
     saveKeys(keys);
 
