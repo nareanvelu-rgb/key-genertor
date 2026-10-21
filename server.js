@@ -7,17 +7,14 @@ const mongoose = require('mongoose');
 const TOKEN = '8896652566:AAGS9oPW8sRZ-5964-Js4whQdYGPNuD443Q'; 
 const MAIN_OWNER_ID = 1834775993; // Aapka Main Owner ID
 
-// Apni MongoDB Atlas connection string yahan daalein (Render par Environment Variable me bhi daal sakte hain)
 const MONGO_URI = process.env.MONGO_URI || 'YOUR_MONGODB_ATLAS_CONNECTION_STRING_HERE';
-// ----------------------------------
-
 const PORT = process.env.PORT || 3000;
 
 const bot = new TelegramBot(TOKEN, { polling: true });
 const app = express();
 app.use(bodyParser.json());
 
-// --- MONGODB SCHEMAS & MODELS ---
+// --- MONGODB CONNECTION ---
 mongoose.connect(MONGO_URI)
     .then(() => console.log('✅ Connected to MongoDB Atlas successfully!'))
     .catch(err => console.error('❌ MongoDB Connection Error:', err));
@@ -35,18 +32,7 @@ const adminSchema = new mongoose.Schema({
 const KeyModel = mongoose.model('Key', keySchema);
 const AdminModel = mongoose.model('Admin', adminSchema);
 
-// Helper Functions using MongoDB
-async function loadAdmins() {
-    let admins = [MAIN_OWNER_ID];
-    try {
-        const dbAdmins = await AdminModel.find({});
-        dbAdmins.forEach(admin => admins.push(admin.userId));
-    } catch (e) {
-        console.error("Error loading admins:", e);
-    }
-    return [...new Set(admins)];
-}
-
+// Helper Functions
 async function isAdmin(userId) {
     if (userId === MAIN_OWNER_ID) return true;
     const admin = await AdminModel.findOne({ userId: userId });
@@ -55,7 +41,13 @@ async function isAdmin(userId) {
 
 // --- TELEGRAM BOT COMMANDS ---
 
-// 1. /admin Dashboard & Help Panel (Upgraded with new features)
+// 1. /start Command
+bot.onText(/\/start/, (msg) => {
+    const chatId = msg.from.id;
+    bot.sendMessage(chatId, "👑 **Welcome to Cyberpunk Key Generator Bot!**\n\nType `/admin` to open the control panel and generate keys.", { parse_mode: 'Markdown' });
+});
+
+// 2. /admin Dashboard & Help Panel
 bot.onText(/\/admin/, async (msg) => {
     const chatId = msg.from.id;
     if (!(await isAdmin(chatId))) return bot.sendMessage(chatId, "❌ You are not authorized!");
@@ -78,7 +70,7 @@ bot.onText(/\/admin/, async (msg) => {
     bot.sendMessage(chatId, helpText, { parse_mode: 'Markdown' });
 });
 
-// 2. Key Generation (/gen [days])
+// 3. Key Generation (/gen [days])
 bot.onText(/\/gen(?: (\d+))?/, async (msg, match) => {
     const chatId = msg.from.id;
     if (!(await isAdmin(chatId))) return bot.sendMessage(chatId, "❌ You are not authorized!");
@@ -101,11 +93,12 @@ bot.onText(/\/gen(?: (\d+))?/, async (msg, match) => {
 
         bot.sendMessage(chatId, `✅ **Key Generated Successfully!**\n\n🔑 Key: \`${randomKey}\`\n⏳ Validity: ${days} Days\n📅 Expires On: ${expiryDateStr}`, { parse_mode: 'Markdown' });
     } catch (e) {
-        bot.sendMessage(chatId, `⚠️ Error generating key. Please try again.`);
+        console.error("Key Generation Error:", e);
+        bot.sendMessage(chatId, `⚠️ Error generating key: ${e.message}`);
     }
 });
 
-// 3. Delete Key (/del [key])
+// 4. Delete Key (/del [key])
 bot.onText(/\/del (.+)/, async (msg, match) => {
     const chatId = msg.from.id;
     if (!(await isAdmin(chatId))) return bot.sendMessage(chatId, "❌ You are not authorized!");
@@ -124,7 +117,7 @@ bot.onText(/\/del (.+)/, async (msg, match) => {
     }
 });
 
-// 4. System Stats (/stats)
+// 5. System Stats (/stats)
 bot.onText(/\/stats/, async (msg) => {
     const chatId = msg.from.id;
     if (!(await isAdmin(chatId))) return bot.sendMessage(chatId, "❌ You are not authorized!");
@@ -148,7 +141,7 @@ bot.onText(/\/stats/, async (msg) => {
     }
 });
 
-// 5. Delete All Expired Keys (Only Main Owner)
+// 6. Delete All Expired Keys (Only Main Owner)
 bot.onText(/\/delall/, async (msg) => {
     const chatId = msg.from.id;
     if (chatId !== MAIN_OWNER_ID) return bot.sendMessage(chatId, "❌ Only Main Owner can perform this action!");
@@ -162,7 +155,7 @@ bot.onText(/\/delall/, async (msg) => {
     }
 });
 
-// 6. Add Admin / Reseller (Only Main Owner)
+// 7. Add Admin / Reseller (Only Main Owner)
 bot.onText(/\/addadmin (\d+)/, async (msg, match) => {
     const chatId = msg.from.id;
     if (chatId !== MAIN_OWNER_ID) return bot.sendMessage(chatId, "❌ Only Main Owner can add admins!");
@@ -171,7 +164,7 @@ bot.onText(/\/addadmin (\d+)/, async (msg, match) => {
 
     try {
         const existing = await AdminModel.findOne({ userId: newAdminId });
-        if (!existing && newAdminId !== MAIN_OWNER_ID) {
+        if (!existing && newAdminId !== MAIN_OWN_ID) {
             await AdminModel.create({ userId: newAdminId });
             bot.sendMessage(chatId, `✅ User \`${newAdminId}\` has been added as a Reseller/Admin!`, { parse_mode: 'Markdown' });
         } else {
@@ -182,7 +175,7 @@ bot.onText(/\/addadmin (\d+)/, async (msg, match) => {
     }
 });
 
-// 7. Remove Admin (Only Main Owner)
+// 8. Remove Admin (Only Main Owner)
 bot.onText(/\/removeadmin (\d+)/, async (msg, match) => {
     const chatId = msg.from.id;
     if (chatId !== MAIN_OWNER_ID) return bot.sendMessage(chatId, "❌ Only Main Owner can remove admins!");
@@ -202,7 +195,7 @@ bot.onText(/\/removeadmin (\d+)/, async (msg, match) => {
     }
 });
 
-// 8. Admin List (Only Main Owner)
+// 9. Admin List (Only Main Owner)
 bot.onText(/\/adminlist/, async (msg) => {
     const chatId = msg.from.id;
     if (chatId !== MAIN_OWNER_ID) return bot.sendMessage(chatId, "❌ Only Main Owner can view admin list!");
