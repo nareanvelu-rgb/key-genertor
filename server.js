@@ -44,7 +44,7 @@ async function isAdmin(userId) {
 // 1. /start Command
 bot.onText(/\/start/, (msg) => {
     const chatId = msg.from.id;
-    bot.sendMessage(chatId, "👑 **Welcome to Cyberpunk Key Generator Bot!**\n\nType `/admin` to open the control panel and generate keys.", { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, "👑 **Welcome to BISKUT Key Generator Bot!**\n\nType `/admin` to open the control panel and generate keys.", { parse_mode: 'Markdown' });
 });
 
 // 2. /admin Dashboard & Help Panel
@@ -52,7 +52,7 @@ bot.onText(/\/admin/, async (msg) => {
     const chatId = msg.from.id;
     if (!(await isAdmin(chatId))) return bot.sendMessage(chatId, "❌ You are not authorized!");
 
-    let helpText = "👑 **CYBERPUNK ADMIN CONTROL PANEL** 👑\n\n";
+    let helpText = "👑 **BISKUT ADMIN CONTROL PANEL** 👑\n\n";
     helpText += "🔑 **Key Management:**\n";
     helpText += "• /gen - 30 Days ki default key banayein\n";
     helpText += "• /gen [days] - Custom days ki key banayein (Jaise: `/gen 7`)\n";
