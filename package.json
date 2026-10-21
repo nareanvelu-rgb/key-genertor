@@ -1,10 +1,15 @@
 {
-  "name": "m1-bot-server",
+  "name": "hy2droid-telegram-bot",
   "version": "1.0.0",
+  "description": "Cyberpunk Hysteria 2 License Key Management Bot with MongoDB",
   "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
   "dependencies": {
-    "express": "^4.18.2",
-    "node-telegram-bot-api": "^0.61.0",
-    "body-parser": "^1.20.2"
+    "body-parser": "^1.20.2",
+    "express": "^4.19.2",
+    "mongoose": "^8.3.1",
+    "node-telegram-bot-api": "^0.66.0"
   }
 }
