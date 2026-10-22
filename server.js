@@ -53,7 +53,7 @@ bot.onText(/\/start/, async (msg) => {
         return bot.sendMessage(chatId, "❌ **Access Denied!**\nAap is bot ko use karne ke liye authorized nahi hain.", { parse_mode: 'Markdown' });
     }
 
-    let helpText = "👑 **M1 ADVANCED CYBERPUNK PANEL** 👑\n\n";
+    let helpText = "👑 **M1 BISKUT KEY GENERATOR** 👑\n\n";
     helpText += "🔑 **Key Management:**\n";
     helpText += "• `/gen` - 30 Days ki random key\n";
     helpText += "• `/gen [days]` - Custom days ki random key (e.g., `/gen 7`)\n";
@@ -79,7 +79,7 @@ bot.onText(/\/admin/, async (msg) => {
     const chatId = msg.from.id;
     if (!(await isAdmin(chatId))) return bot.sendMessage(chatId, "❌ You are not authorized!");
 
-    let helpText = "👑 **M1 ADVANCED CYBERPUNK PANEL** 👑\n\n";
+    let helpText = "👑 **M1 BISKUT PANEL** 👑\n\n";
     helpText += "🔑 **Key Management:**\n";
     helpText += "• `/gen` - 30 Days ki random key\n";
     helpText += "• `/gen [days]` - Custom days ki random key (e.g., `/gen 7`)\n";
