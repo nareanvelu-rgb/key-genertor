@@ -157,8 +157,8 @@ bot.onText(/\/removeadmin (\d+)/, async (msg, match) => {
     }
 });
 
-// 6. Admin List (Only Main Owner)
-bot.onTest(/\/adminlist/, async (msg) => {
+// 6. Admin List (Only Main Owner) - [FIXED onText here]
+bot.onText(/\/adminlist/, async (msg) => {
     const chatId = msg.from.id;
     if (chatId !== MAIN_OWNER_ID) return bot.sendMessage(chatId, "❌ Only Main Owner can view admin list!");
 
