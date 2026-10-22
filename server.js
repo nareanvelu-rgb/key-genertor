@@ -7,14 +7,17 @@ const mongoose = require('mongoose');
 const TOKEN = '8896652566:AAGS9oPW8sRZ-5964-Js4whQdYGPNuD443Q'; 
 const MAIN_OWNER_ID = 1834775993; // Aapka Main Owner ID
 
+// MongoDB Connection String with Database Name included
 const MONGO_URI = process.env.MONGO_URI || 'YOUR_MONGODB_ATLAS_CONNECTION_STRING_HERE';
+// ----------------------------------
+
 const PORT = process.env.PORT || 3000;
 
 const bot = new TelegramBot(TOKEN, { polling: true });
 const app = express();
 app.use(bodyParser.json());
 
-// --- MONGODB CONNECTION ---
+// --- MONGODB SCHEMAS & MODELS ---
 mongoose.connect(MONGO_URI)
     .then(() => console.log('✅ Connected to MongoDB Atlas successfully!'))
     .catch(err => console.error('❌ MongoDB Connection Error:', err));
@@ -32,57 +35,53 @@ const adminSchema = new mongoose.Schema({
 const KeyModel = mongoose.model('Key', keySchema);
 const AdminModel = mongoose.model('Admin', adminSchema);
 
-// Helper Functions
+// Helper Functions using MongoDB
 async function isAdmin(userId) {
     if (userId === MAIN_OWNER_ID) return true;
-    const admin = await AdminModel.findOne({ userId: userId });
-    return !!admin;
+    try {
+        const admin = await AdminModel.findOne({ userId: userId });
+        return !!admin;
+    } catch (e) {
+        console.error("Admin check error:", e);
+        return false;
+    }
 }
 
 // --- TELEGRAM BOT COMMANDS ---
 
-// 1. /start Command
-bot.onText(/\/start/, (msg) => {
-    const chatId = msg.from.id;
-    bot.sendMessage(chatId, "👑 **Welcome to BISKUT Key Generator Bot!**\n\nType `/admin` to open the control panel and generate keys.", { parse_mode: 'Markdown' });
-});
-
-// 2. /admin Dashboard & Help Panel
+// 1. /admin Dashboard & Help Panel
 bot.onText(/\/admin/, async (msg) => {
     const chatId = msg.from.id;
     if (!(await isAdmin(chatId))) return bot.sendMessage(chatId, "❌ You are not authorized!");
 
-    let helpText = "👑 **BISKUT ADMIN CONTROL PANEL** 👑\n\n";
+    let helpText = "👑 **M1 CHEATS ADMIN PANEL** 👑\n\n";
     helpText += "🔑 **Key Management:**\n";
     helpText += "• /gen - 30 Days ki default key banayein\n";
-    helpText += "• /gen [days] - Custom days ki key banayein (Jaise: `/gen 7`)\n";
-    helpText += "• /del [KEY] - Koi bhi key delete karein\n";
-    helpText += "• /stats - Database ke active stats dekhein\n\n";
+    helpText += "• /gen 7 - 7 Days ki key banayein (Example)\n";
+    helpText += "• /del [KEY] - Koi bhi key delete karein\n\n";
 
     if (chatId === MAIN_OWNER_ID) {
-        helpText += "🛡️ **Owner Controls (Exclusive):**\n";
+        helpText += "🛡️ **Owner Controls (Aapke liye):**\n";
         helpText += "• /addadmin [USER_ID] - Naya Reseller/Admin banayein\n";
         helpText += "• /removeadmin [USER_ID] - Admin hatayein\n";
         helpText += "• /adminlist - Sabhi admins ki list dekhein\n";
-        helpText += "• /delall - Saari expired keys database se saaf karein\n";
     }
 
     bot.sendMessage(chatId, helpText, { parse_mode: 'Markdown' });
 });
 
-// 3. Key Generation (/gen [days])
+// 2. Key Generation (/gen [days])
 bot.onText(/\/gen(?: (\d+))?/, async (msg, match) => {
     const chatId = msg.from.id;
     if (!(await isAdmin(chatId))) return bot.sendMessage(chatId, "❌ You are not authorized!");
 
     const days = match[1] ? parseInt(match[1]) : 30;
     
-    const randomKey = 'HY2-' + Math.random().toString(36).substring(2, 6).toUpperCase() + 
+    const randomKey = 'M1-' + Math.random().toString(36).substring(2, 6).toUpperCase() + 
                       '-' + Math.random().toString(36).substring(2, 6).toUpperCase() + 
                       '-' + Math.random().toString(36).substring(2, 6).toUpperCase();
 
     const expiryTime = Date.now() + (days * 24 * 60 * 60 * 1000);
-    const expiryDateStr = new Date(expiryTime).toLocaleString();
 
     try {
         await KeyModel.create({
@@ -91,14 +90,14 @@ bot.onText(/\/gen(?: (\d+))?/, async (msg, match) => {
             createdBy: chatId
         });
 
-        bot.sendMessage(chatId, `✅ **Key Generated Successfully!**\n\n🔑 Key: \`${randomKey}\`\n⏳ Validity: ${days} Days\n📅 Expires On: ${expiryDateStr}`, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, `✅ **Key Generated Successfully!**\n\n🔑 Key: \`${randomKey}\`\n⏳ Validity: ${days} Days`, { parse_mode: 'Markdown' });
     } catch (e) {
-        console.error("Key Generation Error:", e);
+        console.error("Key Gen Error:", e);
         bot.sendMessage(chatId, `⚠️ Error generating key: ${e.message}`);
     }
 });
 
-// 4. Delete Key (/del [key])
+// 3. Delete Key (/del [key])
 bot.onText(/\/del (.+)/, async (msg, match) => {
     const chatId = msg.from.id;
     if (!(await isAdmin(chatId))) return bot.sendMessage(chatId, "❌ You are not authorized!");
@@ -117,45 +116,7 @@ bot.onText(/\/del (.+)/, async (msg, match) => {
     }
 });
 
-// 5. System Stats (/stats)
-bot.onText(/\/stats/, async (msg) => {
-    const chatId = msg.from.id;
-    if (!(await isAdmin(chatId))) return bot.sendMessage(chatId, "❌ You are not authorized!");
-
-    try {
-        const totalKeys = await KeyModel.countDocuments();
-        const totalAdmins = await AdminModel.countDocuments();
-        const now = Date.now();
-        const activeKeys = await KeyModel.countDocuments({ expiry: { $gt: now } });
-        const expiredKeys = totalKeys - activeKeys;
-
-        let statsMsg = "📊 **DATABASE SYSTEM STATS** 📊\n\n";
-        statsMsg += `🔑 Total Generated Keys: \`${totalKeys}\`\n`;
-        statsMsg += `🟢 Active Keys: \`${activeKeys}\`\n`;
-        statsMsg += `🔴 Expired Keys: \`${expiredKeys}\`\n`;
-        statsMsg += `👥 Total Resellers/Admins: \`${totalAdmins + 1}\`\n`;
-
-        bot.sendMessage(chatId, statsMsg, { parse_mode: 'Markdown' });
-    } catch (e) {
-        bot.sendMessage(chatId, `⚠️ Error fetching stats.`);
-    }
-});
-
-// 6. Delete All Expired Keys (Only Main Owner)
-bot.onText(/\/delall/, async (msg) => {
-    const chatId = msg.from.id;
-    if (chatId !== MAIN_OWNER_ID) return bot.sendMessage(chatId, "❌ Only Main Owner can perform this action!");
-
-    try {
-        const now = Date.now();
-        const result = await KeyModel.deleteMany({ expiry: { $lte: now } });
-        bot.sendMessage(chatId, `🧹 Cleanup complete! Deleted \`${result.deletedCount}\` expired keys from MongoDB.`, { parse_mode: 'Markdown' });
-    } catch (e) {
-        bot.sendMessage(chatId, `⚠️ Error cleaning expired keys.`);
-    }
-});
-
-// 7. Add Admin / Reseller (Only Main Owner)
+// 4. Add Admin / Reseller (Only Main Owner)
 bot.onText(/\/addadmin (\d+)/, async (msg, match) => {
     const chatId = msg.from.id;
     if (chatId !== MAIN_OWNER_ID) return bot.sendMessage(chatId, "❌ Only Main Owner can add admins!");
@@ -164,18 +125,19 @@ bot.onText(/\/addadmin (\d+)/, async (msg, match) => {
 
     try {
         const existing = await AdminModel.findOne({ userId: newAdminId });
-        if (!existing && newAdminId !== MAIN_OWN_ID) {
+        if (!existing && newAdminId !== MAIN_OWNER_ID) {
             await AdminModel.create({ userId: newAdminId });
             bot.sendMessage(chatId, `✅ User \`${newAdminId}\` has been added as a Reseller/Admin!`, { parse_mode: 'Markdown' });
         } else {
             bot.sendMessage(chatId, `⚠️ This user is already an admin or the owner.`);
         }
     } catch (e) {
-        bot.sendMessage(chatId, `⚠️ Error adding admin.`);
+        console.error("Add Admin Error:", e);
+        bot.sendMessage(chatId, `⚠️ Error adding admin: ${e.message}`);
     }
 });
 
-// 8. Remove Admin (Only Main Owner)
+// 5. Remove Admin (Only Main Owner)
 bot.onText(/\/removeadmin (\d+)/, async (msg, match) => {
     const chatId = msg.from.id;
     if (chatId !== MAIN_OWNER_ID) return bot.sendMessage(chatId, "❌ Only Main Owner can remove admins!");
@@ -195,8 +157,8 @@ bot.onText(/\/removeadmin (\d+)/, async (msg, match) => {
     }
 });
 
-// 9. Admin List (Only Main Owner)
-bot.onText(/\/adminlist/, async (msg) => {
+// 6. Admin List (Only Main Owner)
+bot.onTest(/\/adminlist/, async (msg) => {
     const chatId = msg.from.id;
     if (chatId !== MAIN_OWNER_ID) return bot.sendMessage(chatId, "❌ Only Main Owner can view admin list!");
 
