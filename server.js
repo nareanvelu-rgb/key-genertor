@@ -5,7 +5,7 @@ const mongoose = require('mongoose');
 
 // --- APNI DETAILS YAHAN DAALEIN ---
 const TOKEN = '8896652566:AAGS9oPW8sRZ-5964-Js4whQdYGPNuD443Q'; 
-const MAIN_OWNER_ID = 1834775993; // Aapka Main Owner ID
+const MAIN_OWNER_ID = 1834775993; 
 
 const MONGO_URI = process.env.MONGO_URI || 'YOUR_MONGODB_ATLAS_CONNECTION_STRING_HERE';
 const PORT = process.env.PORT || 3000;
@@ -22,7 +22,8 @@ mongoose.connect(MONGO_URI)
 const keySchema = new mongoose.Schema({
     key: { type: String, required: true, unique: true },
     expiry: { type: Number, required: true },
-    createdBy: { type: Number, required: true }
+    createdBy: { type: Number, required: true },
+    hwid: { type: String, default: null } // 🔥 HWID Lock Field Added
 });
 
 const adminSchema = new mongoose.Schema({
@@ -45,10 +46,8 @@ async function isAdmin(userId) {
 
 // --- TELEGRAM BOT COMMANDS ---
 
-// 1. /start Command (Only shows full panel to admins)
 bot.onText(/\/start/, async (msg) => {
     const chatId = msg.from.id;
-    
     if (!(await isAdmin(chatId))) {
         return bot.sendMessage(chatId, "❌ **Access Denied!**\nAap is bot ko use karne ke liye authorized nahi hain.", { parse_mode: 'Markdown' });
     }
@@ -57,50 +56,24 @@ bot.onText(/\/start/, async (msg) => {
     helpText += "🔑 **Key Management:**\n";
     helpText += "• `/gen` - 30 Days ki random key\n";
     helpText += "• `/gen [days]` - Custom days ki random key (e.g., `/gen 7`)\n";
-    helpText += "• `/gen [CUSTOM_KEY] [days]` - Apni marzi ki key banayein (e.g., `/gen MYVIPKEY 30`)\n";
-    helpText += "• `/keylist` - Sabhi keys ki list & 1-Click Delete button\n";
-    helpText += "• `/search [KEY]` - Kisi key ki details check karein\n";
-    helpText += "• `/stats` - Database ke active/expired stats dekhein\n";
-    helpText += "• `/mykeys` - Apni generate ki hui keys dekhein\n\n";
+    helpText += "• `/gen [CUSTOM_KEY] [days]` - Apni marzi ki key (e.g., `/gen MYVIPKEY 30`)\n";
+    helpText += "• `/keylist` - Sabhi keys ki list & Delete button\n";
+    helpText += "• `/search [KEY]` - Key ki details check karein\n";
+    helpText += "• `/reset [KEY]` - 🔥 Kisi key ka HWID reset karein\n"; // NEW COMMAND
+    helpText += "• `/stats` - Database stats\n";
+    helpText += "• `/mykeys` - Apni generate ki hui keys\n\n";
 
     if (chatId === MAIN_OWNER_ID) {
         helpText += "🛡️ **Owner Exclusive Controls:**\n";
-        helpText += "• `/addadmin [USER_ID]` - Naya Reseller banayein\n";
+        helpText += "• `/addadmin [USER_ID]` - Naya Reseller\n";
         helpText += "• `/removeadmin [USER_ID]` - Admin hatayein\n";
-        helpText += "• `/adminlist` - Authorized admins ki list\n";
-        helpText += "• `/delall` - Saari expired keys ek baar mein saaf karein\n";
+        helpText += "• `/adminlist` - Admins ki list\n";
+        helpText += "• `/delall` - Saari expired keys saaf karein\n";
     }
 
     bot.sendMessage(chatId, helpText, { parse_mode: 'Markdown' });
 });
 
-// 2. /admin Dashboard & Help Panel (Same as Start for Admins)
-bot.onText(/\/admin/, async (msg) => {
-    const chatId = msg.from.id;
-    if (!(await isAdmin(chatId))) return bot.sendMessage(chatId, "❌ You are not authorized!");
-
-    let helpText = "👑 **M1 BISKUT PANEL** 👑\n\n";
-    helpText += "🔑 **Key Management:**\n";
-    helpText += "• `/gen` - 30 Days ki random key\n";
-    helpText += "• `/gen [days]` - Custom days ki random key (e.g., `/gen 7`)\n";
-    helpText += "• `/gen [CUSTOM_KEY] [days]` - Apni marzi ki key banayein (e.g., `/gen MYVIPKEY 30`)\n";
-    helpText += "• `/keylist` - Sabhi keys ki list & 1-Click Delete button\n";
-    helpText += "• `/search [KEY]` - Kisi key ki details check karein\n";
-    helpText += "• `/stats` - Database ke active/expired stats dekhein\n";
-    helpText += "• `/mykeys` - Apni generate ki hui keys dekhein\n\n";
-
-    if (chatId === MAIN_OWNER_ID) {
-        helpText += "🛡️ **Owner Exclusive Controls:**\n";
-        helpText += "• `/addadmin [USER_ID]` - Naya Reseller banayein\n";
-        helpText += "• `/removeadmin [USER_ID]` - Admin hatayein\n";
-        helpText += "• `/adminlist` - Authorized admins ki list\n";
-        helpText += "• `/delall` - Saari expired keys ek baar mein saaf karein\n";
-    }
-
-    bot.sendMessage(chatId, helpText, { parse_mode: 'Markdown' });
-});
-
-// 3. Advanced Key Generation (/gen [custom_key/days] [days])
 bot.onText(/\/gen(?: (.+))?/, async (msg, match) => {
     const chatId = msg.from.id;
     if (!(await isAdmin(chatId))) return bot.sendMessage(chatId, "❌ You are not authorized!");
@@ -134,7 +107,8 @@ bot.onText(/\/gen(?: (.+))?/, async (msg, match) => {
         await KeyModel.create({
             key: customKey,
             expiry: expiryTime,
-            createdBy: chatId
+            createdBy: chatId,
+            hwid: null // Naya HWID null rahega
         });
 
         bot.sendMessage(chatId, `✅ **Key Generated Successfully!**\n\n🔑 Key: \`${customKey}\`\n⏳ Validity: ${days} Days\n📅 Expires: ${expiryDateStr}`, { parse_mode: 'Markdown' });
@@ -143,16 +117,13 @@ bot.onText(/\/gen(?: (.+))?/, async (msg, match) => {
     }
 });
 
-// 4. Key List with 1-Click Inline Delete Buttons (/keylist)
 bot.onText(/\/keylist/, async (msg) => {
     const chatId = msg.from.id;
     if (!(await isAdmin(chatId))) return bot.sendMessage(chatId, "❌ You are not authorized!");
 
     try {
         const keys = await KeyModel.find({}).sort({ expiry: -1 }).limit(20);
-        if (keys.length === 0) {
-            return bot.sendMessage(chatId, "📂 No license keys found in database.");
-        }
+        if (keys.length === 0) return bot.sendMessage(chatId, "📂 No keys found.");
 
         let message = "📋 **DATABASE LICENSE KEYS (Latest 20):**\n\n";
         const inlineKeyboard = [];
@@ -160,54 +131,55 @@ bot.onText(/\/keylist/, async (msg) => {
         keys.forEach((k, index) => {
             const isExpired = Date.now() > k.expiry;
             const statusEmoji = isExpired ? "🔴" : "🟢";
-            message += `${index + 1}. \`${k.key}\` (${statusEmoji})\n`;
+            const hwidStatus = k.hwid ? "🔒" : "🔓";
+            message += `${index + 1}. \`${k.key}\` (${statusEmoji} ${hwidStatus})\n`;
 
-            inlineKeyboard.push([
-                { text: `❌ Delete ${k.key}`, callback_data: `del_${k.key}` }
-            ]);
+            inlineKeyboard.push([{ text: `❌ Delete ${k.key}`, callback_data: `del_${k.key}` }]);
         });
 
-        bot.sendMessage(chatId, message, {
-            parse_mode: 'Markdown',
-            reply_markup: {
-                inline_keyboard: inlineKeyboard
-            }
-        });
+        bot.sendMessage(chatId, message, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: inlineKeyboard } });
     } catch (e) {
         bot.sendMessage(chatId, `⚠️ Error fetching keys list.`);
     }
 });
 
-// Callback Query Handler for 1-Click Key Deletion via Inline Buttons
+// 🔥 NEW: Reset HWID Command
+bot.onText(/\/reset (.+)/, async (msg, match) => {
+    const chatId = msg.from.id;
+    if (!(await isAdmin(chatId))) return bot.sendMessage(chatId, "❌ You are not authorized!");
+
+    const targetKey = match[1].trim().toUpperCase();
+    try {
+        const updated = await KeyModel.findOneAndUpdate({ key: targetKey }, { hwid: null }, { new: true });
+        if (updated) {
+            bot.sendMessage(chatId, `✅ HWID Reset Successful!\nKey \`${targetKey}\` ab naye device pe chal sakti hai.`, { parse_mode: 'Markdown' });
+        } else {
+            bot.sendMessage(chatId, `❌ Key nahi mili database mein!`);
+        }
+    } catch (e) {
+        bot.sendMessage(chatId, `⚠️ Error resetting HWID.`);
+    }
+});
+
 bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
     const data = query.data;
-
-    if (!(await isAdmin(chatId))) {
-        return bot.answerCallbackQuery(query.id, { text: "❌ Unauthorized!", show_alert: true });
-    }
+    if (!(await isAdmin(chatId))) return bot.answerCallbackQuery(query.id, { text: "❌ Unauthorized!", show_alert: true });
 
     if (data.startsWith('del_')) {
         const keyToDel = data.replace('del_', '');
         try {
             const deleted = await KeyModel.findOneAndDelete({ key: keyToDel });
             if (deleted) {
-                bot.answerCallbackQuery(query.id, { text: `✅ Key ${keyToDel} deleted successfully!` });
-                bot.editMessageText(`🗑️ Key \`${keyToDel}\` was deleted by admin.`, {
-                    chat_id: chatId,
-                    message_id: query.message.message_id,
-                    parse_mode: 'Markdown'
-                });
+                bot.answerCallbackQuery(query.id, { text: `✅ Key ${keyToDel} deleted!` });
+                bot.editMessageText(`🗑️ Key \`${keyToDel}\` was deleted.`, { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown' });
             } else {
-                bot.answerCallbackQuery(query.id, { text: "⚠️ Key already deleted or not found!", show_alert: true });
+                bot.answerCallbackQuery(query.id, { text: "⚠️ Key not found!", show_alert: true });
             }
-        } catch (e) {
-            bot.answerCallbackQuery(query.id, { text: "⚠️ Database error while deleting.", show_alert: true });
-        }
+        } catch (e) { bot.answerCallbackQuery(query.id, { text: "⚠️ Database error.", show_alert: true }); }
     }
 });
 
-// 5. Search Specific Key (/search [key])
 bot.onText(/\/search (.+)/, async (msg, match) => {
     const chatId = msg.from.id;
     if (!(await isAdmin(chatId))) return bot.sendMessage(chatId, "❌ You are not authorized!");
@@ -215,9 +187,7 @@ bot.onText(/\/search (.+)/, async (msg, match) => {
     const searchKey = match[1].trim().toUpperCase();
     try {
         const keyData = await KeyModel.findOne({ key: searchKey });
-        if (!keyData) {
-            return bot.sendMessage(chatId, `❌ Key \`${searchKey}\` database mein nahi mili.`);
-        }
+        if (!keyData) return bot.sendMessage(chatId, `❌ Key \`${searchKey}\` not found.`);
 
         const isExpired = Date.now() > keyData.expiry;
         const status = isExpired ? "🔴 EXPIRED" : "🟢 ACTIVE";
@@ -227,153 +197,118 @@ bot.onText(/\/search (.+)/, async (msg, match) => {
         response += `🔑 Key: \`${keyData.key}\`\n`;
         response += `📊 Status: ${status}\n`;
         response += `📅 Expires On: ${expiryDateStr}\n`;
-        response += `👤 Created By ID: \`${keyData.createdBy}\``;
+        response += `📱 HWID Lock: \`${keyData.hwid || 'Not Locked Yet'}\`\n`; // Added HWID Info
+        response += `👤 Created By: \`${keyData.createdBy}\``;
 
         bot.sendMessage(chatId, response, { parse_mode: 'Markdown' });
-    } catch (e) {
-        bot.sendMessage(chatId, `⚠️ Error searching key.`);
-    }
+    } catch (e) { bot.sendMessage(chatId, `⚠️ Error searching key.`); }
 });
 
-// 6. System Stats (/stats)
 bot.onText(/\/stats/, async (msg) => {
     const chatId = msg.from.id;
     if (!(await isAdmin(chatId))) return bot.sendMessage(chatId, "❌ You are not authorized!");
-
     try {
         const totalKeys = await KeyModel.countDocuments();
         const totalAdmins = await AdminModel.countDocuments();
         const now = Date.now();
         const activeKeys = await KeyModel.countDocuments({ expiry: { $gt: now } });
         const expiredKeys = totalKeys - activeKeys;
+        const lockedKeys = await KeyModel.countDocuments({ hwid: { $ne: null } }); // Added
 
         let statsMsg = "📊 **ADVANCED SYSTEM STATS** 📊\n\n";
         statsMsg += `🔑 Total Keys: \`${totalKeys}\`\n`;
         statsMsg += `🟢 Active Keys: \`${activeKeys}\`\n`;
+        statsMsg += `🔒 Locked to Device: \`${lockedKeys}\`\n`; // Added
         statsMsg += `🔴 Expired Keys: \`${expiredKeys}\`\n`;
-        statsMsg += `👥 Total Resellers/Admins: \`${totalAdmins + 1}\`\n`;
-
+        statsMsg += `👥 Total Admins: \`${totalAdmins + 1}\`\n`;
         bot.sendMessage(chatId, statsMsg, { parse_mode: 'Markdown' });
-    } catch (e) {
-        bot.sendMessage(chatId, `⚠️ Error fetching stats.`);
-    }
+    } catch (e) { bot.sendMessage(chatId, `⚠️ Error fetching stats.`); }
 });
 
-// 7. My Keys (/mykeys)
-bot.onText(/\/mykeys/, async (msg) => {
-    const chatId = msg.from.id;
-    if (!(await isAdmin(chatId))) return bot.sendMessage(chatId, "❌ You are not authorized!");
-
-    try {
-        const keys = await KeyModel.find({ createdBy: chatId }).sort({ expiry: -1 }).limit(15);
-        if (keys.length === 0) {
-            return bot.sendMessage(chatId, "📂 Aapne abhi tak koi key generate nahi ki hai.");
-        }
-
-        let msgText = `📋 **YOUR GENERATED KEYS (Latest 15):**\n\n`;
-        keys.forEach((k, idx) => {
-            const isExpired = Date.now() > k.expiry;
-            const status = isExpired ? "🔴" : "🟢";
-            msgText += `${idx + 1}. \`${k.key}\` (${status})\n`;
-        });
-
-        bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
-    } catch (e) {
-        bot.sendMessage(chatId, `⚠️ Error fetching your keys.`);
-    }
-});
-
-// 8. Delete All Expired Keys (Owner Only)
 bot.onText(/\/delall/, async (msg) => {
     const chatId = msg.from.id;
     if (chatId !== MAIN_OWNER_ID) return bot.sendMessage(chatId, "❌ Only Main Owner can perform this action!");
-
     try {
         const now = Date.now();
         const result = await KeyModel.deleteMany({ expiry: { $lte: now } });
-        bot.sendMessage(chatId, `🧹 Cleanup complete! Deleted \`${result.deletedCount}\` expired keys from MongoDB.`, { parse_mode: 'Markdown' });
-    } catch (e) {
-        bot.sendMessage(chatId, `⚠️ Error cleaning expired keys.`);
-    }
+        bot.sendMessage(chatId, `🧹 Cleanup complete! Deleted \`${result.deletedCount}\` expired keys.`, { parse_mode: 'Markdown' });
+    } catch (e) { bot.sendMessage(chatId, `⚠️ Error cleaning expired keys.`); }
 });
 
-// 9. Add Admin (Owner Only)
 bot.onText(/\/addadmin (\d+)/, async (msg, match) => {
     const chatId = msg.from.id;
     if (chatId !== MAIN_OWNER_ID) return bot.sendMessage(chatId, "❌ Only Main Owner can add admins!");
-
     const newAdminId = parseInt(match[1]);
     try {
         const existing = await AdminModel.findOne({ userId: newAdminId });
         if (!existing && newAdminId !== MAIN_OWNER_ID) {
             await AdminModel.create({ userId: newAdminId });
-            bot.sendMessage(chatId, `✅ User \`${newAdminId}\` has been added as a Reseller/Admin!`, { parse_mode: 'Markdown' });
-        } else {
-            bot.sendMessage(chatId, `⚠️ This user is already an admin or the owner.`);
-        }
-    } catch (e) {
-        bot.sendMessage(chatId, `⚠️ Error adding admin: ${e.message}`);
-    }
+            bot.sendMessage(chatId, `✅ User \`${newAdminId}\` has been added as Admin!`, { parse_mode: 'Markdown' });
+        } else { bot.sendMessage(chatId, `⚠️ User is already an admin.`); }
+    } catch (e) { bot.sendMessage(chatId, `⚠️ Error adding admin.`); }
 });
 
-// 10. Remove Admin (Owner Only)
 bot.onText(/\/removeadmin (\d+)/, async (msg, match) => {
     const chatId = msg.from.id;
     if (chatId !== MAIN_OWNER_ID) return bot.sendMessage(chatId, "❌ Only Main Owner can remove admins!");
-
     const targetId = parseInt(match[1]);
     if (targetId === MAIN_OWNER_ID) return bot.sendMessage(chatId, `❌ You cannot remove the Main Owner!`);
-
     try {
         const deleted = await AdminModel.findOneAndDelete({ userId: targetId });
-        if (deleted) {
-            bot.sendMessage(chatId, `🗑️ User \`${targetId}\` removed from admins list.`, { parse_mode: 'Markdown' });
-        } else {
-            bot.sendMessage(chatId, `⚠️ Admin not found.`);
-        }
-    } catch (e) {
-        bot.sendMessage(chatId, `⚠️ Error removing admin.`);
-    }
+        if (deleted) { bot.sendMessage(chatId, `🗑️ User \`${targetId}\` removed from admins.`, { parse_mode: 'Markdown' }); } 
+        else { bot.sendMessage(chatId, `⚠️ Admin not found.`); }
+    } catch (e) { bot.sendMessage(chatId, `⚠️ Error removing admin.`); }
 });
 
-// 11. Admin List (Owner Only)
 bot.onText(/\/adminlist/, async (msg) => {
     const chatId = msg.from.id;
     if (chatId !== MAIN_OWNER_ID) return bot.sendMessage(chatId, "❌ Only Main Owner can view admin list!");
-
     try {
         const admins = await AdminModel.find({});
         let listMsg = "👥 **Authorized Admins/Resellers:**\n\n";
         listMsg += `1. \`${MAIN_OWNER_ID}\` (Owner)\n`;
-        
-        admins.forEach((admin, index) => {
-            listMsg += `${index + 2}. \`${admin.userId}\`\n`;
-        });
-
+        admins.forEach((admin, index) => { listMsg += `${index + 2}. \`${admin.userId}\`\n`; });
         bot.sendMessage(chatId, listMsg, { parse_mode: 'Markdown' });
-    } catch (e) {
-        bot.sendMessage(chatId, `⚠️ Error fetching admin list.`);
-    }
+    } catch (e) { bot.sendMessage(chatId, `⚠️ Error fetching admin list.`); }
 });
 
-// --- ANDROID APP VERIFICATION API ---
+// --- 🔥 NEW ANDROID APP VERIFICATION API (WITH HWID LOCK) ---
 app.post('/verify', async (req, res) => {
-    const { key } = req.body;
-    if (!key) return res.json({ success: false, message: "Key is required!" });
+    const { key, hwid } = req.body;
+    
+    if (!key || !hwid) {
+        return res.json({ success: false, message: "Key and HWID are required!" });
+    }
 
     try {
-        const keyData = await KeyModel.findOne({ key: key.trim() });
+        let keyData = await KeyModel.findOne({ key: key.trim() });
 
+        // 1. Check if key exists
         if (!keyData) {
             return res.json({ success: false, message: "Invalid license key!" });
         }
 
+        // 2. Check if key is expired
         if (Date.now() > keyData.expiry) {
-            return res.json({ success: false, message: "License key has expired!" });
+            return res.json({ success: false, message: "Key Expired!\nRenew from @m1cheatshopbot or DM Biskut" });
         }
 
-        res.json({ success: true, message: "OK" });
+        // 3. HWID Lock Logic
+        if (!keyData.hwid) {
+            // First time login: Save HWID
+            keyData.hwid = hwid;
+            await keyData.save();
+            return res.json({ success: true, message: "Login Successful! Device Locked." });
+        } else if (keyData.hwid !== hwid) {
+            // Already locked to another device
+            return res.json({ success: false, message: "Device Mismatch!\nThis key is already locked to another device.\nIf you changed device, contact @m1cheatshopbot" });
+        }
+
+        // If everything is fine
+        res.json({ success: true, message: "Login Successful!" });
+
     } catch (e) {
+        console.error(e);
         res.json({ success: false, message: "Server database error!" });
     }
 });
