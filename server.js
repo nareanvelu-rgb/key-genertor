@@ -28,7 +28,8 @@ const keySchema = new mongoose.Schema({
 });
 
 const adminSchema = new mongoose.Schema({
-    userId: { type: Number, required: true, unique: true }
+    userId: { type: Number, required: true, unique: true },
+    credits: { type: Number, default: 0 } // 🔥 Admin Credits Field
 });
 
 const KeyModel = mongoose.model('Key', keySchema);
@@ -68,14 +69,12 @@ app.post('/verify', async (req, res) => {
 
         // 3. 🔥 STRICT HWID CHECK 🔥
         if (keyData.hwid === null || keyData.hwid === "") {
-            // First time use: Save HWID
             keyData.hwid = hwid;
             await keyData.save();
             console.log(`[AUTH] Key ${key} locked to new HWID: ${hwid}`);
             return res.json({ success: true, message: "Login Successful! Device Locked." });
         } 
         else if (keyData.hwid !== hwid) {
-            // Mismatch: Another device trying to login
             console.log(`[ALERT] Key ${key} tried to login from unauthorized HWID: ${hwid}. (Original: ${keyData.hwid})`);
             return res.json({ 
                 success: false, 
@@ -83,7 +82,6 @@ app.post('/verify', async (req, res) => {
             });
         }
 
-        // 4. Everything matches
         res.json({ success: true, message: "Login Successful!" });
 
     } catch (e) {
@@ -103,33 +101,85 @@ bot.onText(/\/start/, async (msg) => {
     helpText += "• `/keylist` - Keys List\n";
     helpText += "• `/reset [KEY]` - 🔥 Reset HWID Lock\n";
     helpText += "• `/search [KEY]` - Key Info\n";
+    helpText += "• `/mycredits` - Check your remaining credits\n";
     
-    // Sirf Main Owner ko hi Admin management commands dikhengi
     if (chatId === MAIN_OWNER_ID) {
         helpText += "\n⚡ **OWNER COMMANDS:**\n";
-        helpText += "• `/addadmin [USER_ID]` - Add Admin\n";
-        helpText += "• `/deladmin [USER_ID]` - Remove Admin\n";
-        helpText += "• `/adminlist` - View All Admins\n";
+        helpText += "• `/addadmin [ID] [Credits]` - Add Admin with Credits\n";
+        helpText += "• `/addcredits [ID] [Credits]` - Add Credits to Admin\n";
+        helpText += "• `/deladmin [ID]` - Remove Admin\n";
+        helpText += "• `/adminlist` - View All Admins & Credits\n";
     }
 
     bot.sendMessage(chatId, helpText, { parse_mode: 'Markdown' });
 });
 
-// --- OWNER ONLY: ADD ADMIN ---
+// --- CHECK CREDITS COMMAND ---
+bot.onText(/\/mycredits/, async (msg) => {
+    const chatId = msg.from.id;
+    if (!(await isAdmin(chatId))) return bot.sendMessage(chatId, "❌ Unauthorized!");
+
+    if (chatId === MAIN_OWNER_ID) {
+        return bot.sendMessage(chatId, "👑 **Main Owner:** Aapke paas **Unlimited** credits hain!", { parse_mode: 'Markdown' });
+    }
+
+    try {
+        const adminData = await AdminModel.findOne({ userId: chatId });
+        const credits = adminData ? adminData.credits : 0;
+        bot.sendMessage(chatId, `💰 **Your Remaining Credits:** \`${credits}\``, { parse_mode: 'Markdown' });
+    } catch (e) {
+        bot.sendMessage(chatId, `⚠️ Error fetching credits.`);
+    }
+});
+
+// --- OWNER ONLY: ADD ADMIN WITH CREDITS ---
 bot.onText(/\/addadmin(?: (.+))?/, async (msg, match) => {
     const chatId = msg.from.id;
     if (chatId !== MAIN_OWNER_ID) return bot.sendMessage(chatId, "❌ Yeh command sirf Main Owner use kar sakta hai!");
 
-    const newAdminId = parseInt(match[1]);
+    const input = match[1] ? match[1].trim().split(" ") : [];
+    const newAdminId = parseInt(input[0]);
+    const credits = parseInt(input[1]) || 0;
+
     if (!newAdminId || isNaN(newAdminId)) {
-        return bot.sendMessage(chatId, "⚠️ Sahi Telegram User ID do!\nUsage: `/addadmin 123456789`", { parse_mode: 'Markdown' });
+        return bot.sendMessage(chatId, "⚠️ Sahi format use karo!\nUsage: `/addadmin 123456789 500`", { parse_mode: 'Markdown' });
     }
 
     try {
-        await AdminModel.create({ userId: newAdminId });
-        bot.sendMessage(chatId, `✅ Successfully added \`${newAdminId}\` as an Admin!`, { parse_mode: 'Markdown' });
+        await AdminModel.create({ userId: newAdminId, credits: credits });
+        bot.sendMessage(chatId, `✅ Successfully added \`${newAdminId}\` as Admin with **${credits}** credits!`, { parse_mode: 'Markdown' });
     } catch (e) {
         bot.sendMessage(chatId, `⚠️ Yeh user pehle se admin hai ya database error hai.`);
+    }
+});
+
+// --- OWNER ONLY: ADD CREDITS TO ADMIN ---
+bot.onText(/\/addcredits(?: (.+))?/, async (msg, match) => {
+    const chatId = msg.from.id;
+    if (chatId !== MAIN_OWNER_ID) return bot.sendMessage(chatId, "❌ Yeh command sirf Main Owner use kar sakta hai!");
+
+    const input = match[1] ? match[1].trim().split(" ") : [];
+    const targetId = parseInt(input[0]);
+    const addAmt = parseInt(input[1]);
+
+    if (!targetId || isNaN(targetId) || isNaN(addAmt)) {
+        return bot.sendMessage(chatId, "⚠️ Sahi format use karo!\nUsage: `/addcredits 123456789 100`", { parse_mode: 'Markdown' });
+    }
+
+    try {
+        const adminData = await AdminModel.findOneAndUpdate(
+            { userId: targetId },
+            { $inc: { credits: addAmt } },
+            { new: true }
+        );
+
+        if (adminData) {
+            bot.sendMessage(chatId, `✅ Successfully added ${addAmt} credits to \`${targetId}\`.\n💰 New Balance: **${adminData.credits}**`, { parse_mode: 'Markdown' });
+        } else {
+            bot.sendMessage(chatId, `❌ Yeh user admin list mein nahi mila.`);
+        }
+    } catch (e) {
+        bot.sendMessage(chatId, `⚠️ Error updating credits.`);
     }
 });
 
@@ -155,20 +205,20 @@ bot.onText(/\/deladmin(?: (.+))?/, async (msg, match) => {
     }
 });
 
-// --- OWNER ONLY: ADMIN LIST ---
+// --- OWNER ONLY: ADMIN LIST WITH CREDITS ---
 bot.onText(/\/adminlist/, async (msg) => {
     const chatId = msg.from.id;
     if (chatId !== MAIN_OWNER_ID) return bot.sendMessage(chatId, "❌ Yeh command sirf Main Owner use kar sakta hai!");
 
     try {
         const admins = await AdminModel.find({});
-        let msgText = `👑 **Main Owner:** \`${MAIN_OWNER_ID}\`\n\n🛡️ **Sub-Admins:**\n`;
+        let msgText = `👑 **Main Owner:** \`${MAIN_OWNER_ID}\` (Unlimited Credits)\n\n🛡️ **Sub-Admins & Credits:**\n`;
         
         if (admins.length === 0) {
             msgText += "Koi sub-admin nahi hai abhi.";
         } else {
             admins.forEach((adm, index) => {
-                msgText += `${index + 1}. \`${adm.userId}\`\n`;
+                msgText += `${index + 1}. ID: \`${adm.userId}\` | Credits: **${adm.credits}**\n`;
             });
         }
         bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
@@ -177,6 +227,7 @@ bot.onText(/\/adminlist/, async (msg) => {
     }
 });
 
+// --- KEY GENERATION WITH CREDIT DEDUCTION ---
 bot.onText(/\/gen(?: (.+))?/, async (msg, match) => {
     const chatId = msg.from.id;
     if (!(await isAdmin(chatId))) return bot.sendMessage(chatId, "❌ Unauthorized!");
@@ -187,9 +238,33 @@ bot.onText(/\/gen(?: (.+))?/, async (msg, match) => {
 
     if (inputArg) {
         const parts = inputArg.split(" ");
-        if (parts.length === 2) { customKey = parts[0].toUpperCase(); days = parseInt(parts[1]) || 30; } 
-        else if (!isNaN(parts[0])) { days = parseInt(parts[0]) || 30; } 
-        else { customKey = parts[0].toUpperCase(); }
+        if (parts.length === 2) { 
+            customKey = parts[0].toUpperCase(); 
+            days = parseInt(parts[1]) || 30; 
+        } 
+        else if (!isNaN(parts[0])) { 
+            days = parseInt(parts[0]) || 30; 
+        } 
+        else { 
+            customKey = parts[0].toUpperCase(); 
+        }
+    }
+
+    // Check credits if user is NOT the main owner
+    if (chatId !== MAIN_OWNER_ID) {
+        try {
+            const adminData = await AdminModel.findOne({ userId: chatId });
+            if (!adminData || adminData.credits < days) {
+                const currentCreds = adminData ? adminData.credits : 0;
+                return bot.sendMessage(chatId, `❌ **Insufficient Credits!**\nYou need **${days}** credits to generate a ${days}-day key, but you only have **${currentCreds}** credits.\nContact Main Owner to recharge.`, { parse_mode: 'Markdown' });
+            }
+
+            // Deduct credits equal to days
+            adminData.credits -= days;
+            await adminData.save();
+        } catch (e) {
+            return bot.sendMessage(chatId, `⚠️ Database error while checking credits.`);
+        }
     }
 
     if (!customKey) {
@@ -201,8 +276,21 @@ bot.onText(/\/gen(?: (.+))?/, async (msg, match) => {
     const expiryTime = Date.now() + (days * 24 * 60 * 60 * 1000);
     try {
         await KeyModel.create({ key: customKey, expiry: expiryTime, createdBy: chatId, hwid: null });
-        bot.sendMessage(chatId, `✅ **Key Generated!**\n🔑 Key: \`${customKey}\`\n⏳ Days: ${days}`, { parse_mode: 'Markdown' });
-    } catch (e) { bot.sendMessage(chatId, `⚠️ Key already exists!`); }
+        
+        let successMsg = `✅ **Key Generated!**\n🔑 Key: \`${customKey}\`\n⏳ Days: ${days}`;
+        if (chatId !== MAIN_OWNER_ID) {
+            const updatedAdmin = await AdminModel.findOne({ userId: chatId });
+            successMsg += `\n💰 Remaining Credits: **${updatedAdmin.credits}**`;
+        }
+        
+        bot.sendMessage(chatId, successMsg, { parse_mode: 'Markdown' });
+    } catch (e) { 
+        // Agar key pehle se exist karti hai toh cut hue credits wapas refund kar do agar owner nahi hai
+        if (chatId !== MAIN_OWNER_ID) {
+            await AdminModel.findOneAndUpdate({ userId: chatId }, { $inc: { credits: days } });
+        }
+        bot.sendMessage(chatId, `⚠️ Key already exists! (Credits refunded)`); 
+    }
 });
 
 bot.onText(/\/reset (.+)/, async (msg, match) => {
@@ -213,7 +301,7 @@ bot.onText(/\/reset (.+)/, async (msg, match) => {
     try {
         const updated = await KeyModel.findOneAndUpdate({ key: targetKey }, { hwid: null }, { new: true });
         if (updated) {
-            bot.sendMessage(chatId, `✅ HWID Reset Successful!\nKey \`${targetKey}\` is now unlocked.`, { parse_Mode: 'Markdown' });
+            bot.sendMessage(chatId, `✅ HWID Reset Successful!\nKey \`${targetKey}\` is now unlocked.`, { parse_mode: 'Markdown' });
         } else {
             bot.sendMessage(chatId, `❌ Key not found!`);
         }
