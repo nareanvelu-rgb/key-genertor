@@ -34,6 +34,7 @@ const adminSchema = new mongoose.Schema({
 const KeyModel = mongoose.model('Key', keySchema);
 const AdminModel = mongoose.model('Admin', adminSchema);
 
+// Helper function to check if user is Admin or Main Owner
 async function isAdmin(userId) {
     if (userId === MAIN_OWNER_ID) return true;
     try {
@@ -103,7 +104,77 @@ bot.onText(/\/start/, async (msg) => {
     helpText += "• `/reset [KEY]` - 🔥 Reset HWID Lock\n";
     helpText += "• `/search [KEY]` - Key Info\n";
     
+    // Sirf Main Owner ko hi Admin management commands dikhengi
+    if (chatId === MAIN_OWNER_ID) {
+        helpText += "\n⚡ **OWNER COMMANDS:**\n";
+        helpText += "• `/addadmin [USER_ID]` - Add Admin\n";
+        helpText += "• `/deladmin [USER_ID]` - Remove Admin\n";
+        helpText += "• `/adminlist` - View All Admins\n";
+    }
+
     bot.sendMessage(chatId, helpText, { parse_mode: 'Markdown' });
+});
+
+// --- OWNER ONLY: ADD ADMIN ---
+bot.onText(/\/addadmin(?: (.+))?/, async (msg, match) => {
+    const chatId = msg.from.id;
+    if (chatId !== MAIN_OWNER_ID) return bot.sendMessage(chatId, "❌ Yeh command sirf Main Owner use kar sakta hai!");
+
+    const newAdminId = parseInt(match[1]);
+    if (!newAdminId || isNaN(newAdminId)) {
+        return bot.sendMessage(chatId, "⚠️ Sahi Telegram User ID do!\nUsage: `/addadmin 123456789`", { parse_mode: 'Markdown' });
+    }
+
+    try {
+        await AdminModel.create({ userId: newAdminId });
+        bot.sendMessage(chatId, `✅ Successfully added \`${newAdminId}\` as an Admin!`, { parse_mode: 'Markdown' });
+    } catch (e) {
+        bot.sendMessage(chatId, `⚠️ Yeh user pehle se admin hai ya database error hai.`);
+    }
+});
+
+// --- OWNER ONLY: REMOVE ADMIN ---
+bot.onText(/\/deladmin(?: (.+))?/, async (msg, match) => {
+    const chatId = msg.from.id;
+    if (chatId !== MAIN_OWNER_ID) return bot.sendMessage(chatId, "❌ Yeh command sirf Main Owner use kar sakta hai!");
+
+    const targetId = parseInt(match[1]);
+    if (!targetId || isNaN(targetId)) {
+        return bot.sendMessage(chatId, "⚠️ Sahi Telegram User ID do!\nUsage: `/deladmin 123456789`", { parse_mode: 'Markdown' });
+    }
+
+    try {
+        const deleted = await AdminModel.findOneAndDelete({ userId: targetId });
+        if (deleted) {
+            bot.sendMessage(chatId, `✅ Successfully removed \`${targetId}\` from Admins.`, { parse_mode: 'Markdown' });
+        } else {
+            bot.sendMessage(chatId, `❌ Yeh user admin list mein nahi mila.`);
+        }
+    } catch (e) {
+        bot.sendMessage(chatId, `⚠️ Error removing admin.`);
+    }
+});
+
+// --- OWNER ONLY: ADMIN LIST ---
+bot.onText(/\/adminlist/, async (msg) => {
+    const chatId = msg.from.id;
+    if (chatId !== MAIN_OWNER_ID) return bot.sendMessage(chatId, "❌ Yeh command sirf Main Owner use kar sakta hai!");
+
+    try {
+        const admins = await AdminModel.find({});
+        let msgText = `👑 **Main Owner:** \`${MAIN_OWNER_ID}\`\n\n🛡️ **Sub-Admins:**\n`;
+        
+        if (admins.length === 0) {
+            msgText += "Koi sub-admin nahi hai abhi.";
+        } else {
+            admins.forEach((adm, index) => {
+                msgText += `${index + 1}. \`${adm.userId}\`\n`;
+            });
+        }
+        bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
+    } catch (e) {
+        bot.sendMessage(chatId, `⚠️ Error fetching admin list.`);
+    }
 });
 
 bot.onText(/\/gen(?: (.+))?/, async (msg, match) => {
@@ -142,7 +213,7 @@ bot.onText(/\/reset (.+)/, async (msg, match) => {
     try {
         const updated = await KeyModel.findOneAndUpdate({ key: targetKey }, { hwid: null }, { new: true });
         if (updated) {
-            bot.sendMessage(chatId, `✅ HWID Reset Successful!\nKey \`${targetKey}\` is now unlocked.`, { parse_mode: 'Markdown' });
+            bot.sendMessage(chatId, `✅ HWID Reset Successful!\nKey \`${targetKey}\` is now unlocked.`, { parse_Mode: 'Markdown' });
         } else {
             bot.sendMessage(chatId, `❌ Key not found!`);
         }
