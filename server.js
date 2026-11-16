@@ -24,7 +24,9 @@ const keySchema = new mongoose.Schema({
     key: { type: String, required: true, unique: true },
     expiry: { type: Number, required: true },
     createdBy: { type: Number, required: true }, // Reseller / Admin Telegram ID
-    hwid: { type: String, default: null } // 🔥 HWID Lock Field
+    hwid: { type: String, default: null }, // 🔥 HWID Lock Field
+    isPaused: { type: Boolean, default: false }, // 🔥 Pause State Field
+    pausedRemainingTime: { type: Number, default: 0 } // 🔥 Remaining time stored when paused
 });
 
 const adminSchema = new mongoose.Schema({
@@ -62,12 +64,17 @@ app.post('/verify', async (req, res) => {
             return res.json({ success: false, message: "Invalid license key!" });
         }
 
-        // 2. Check if key is expired
+        // 2. 🔥 Check if keys are globally paused by owner
+        if (keyData.isPaused) {
+            return res.json({ success: false, message: "⚠️ System/Keys are currently paused by the Owner. Try again later!" });
+        }
+
+        // 3. Check if key is expired
         if (Date.now() > keyData.expiry) {
             return res.json({ success: false, message: "Key Expired!\nRenew from @m1cheatshopbot or DM Biskut" });
         }
 
-        // 3. 🔥 STRICT HWID CHECK 🔥
+        // 4. 🔥 STRICT HWID CHECK 🔥
         if (keyData.hwid === null || keyData.hwid === "") {
             keyData.hwid = hwid;
             await keyData.save();
@@ -109,6 +116,10 @@ bot.onText(/\/start/, async (msg) => {
         helpText += "• `/allkeys` - View all generated keys in system\n";
         helpText += "• `/systemstats` - View overall system dashboard status\n\n";
         
+        helpText += "⏸️ **OWNER TIMER & PAUSE CONTROL:**\n";
+        helpText += "• `/pausekeys` - ⏸️ Pause all active keys (Freeze Timers)\n";
+        helpText += "• `/unpausekeys` - ▶️ Resume all paused keys (Restore Timers)\n\n";
+
         helpText += "🗑️ **OWNER CLEANUP & MANAGEMENT:**\n";
         helpText += "• `/delkey [KEY]` - Delete a specific key completely\n";
         helpText += "• `/resellerdelkeys [AdminID]` - Delete all keys made by a specific reseller\n";
@@ -287,7 +298,7 @@ bot.onText(/\/gen(?: (.+))?/, async (msg, match) => {
 
     const expiryTime = Date.now() + (days * 24 * 60 * 60 * 1000);
     try {
-        await KeyModel.create({ key: customKey, expiry: expiryTime, createdBy: chatId, hwid: null });
+        await KeyModel.create({ key: customKey, expiry: expiryTime, createdBy: chatId, hwid: null, isPaused: false });
         
         let successMsg = `✅ **Key Generated Successfully!**\n\n🔑 Key: \`${customKey}\`\n⏳ Validity: **${days} Days**\n💰 Credits Deducted: **-${requiredCredits}**`;
         if (chatId !== MAIN_OWNER_ID) {
@@ -331,13 +342,62 @@ bot.onText(/\/mykeys/, async (msg) => {
 
         let message = `📋 **YOUR GENERATED KEYS (Last 20):**\n\n`;
         keys.forEach((k, i) => {
-            const status = (Date.now() > k.expiry) ? "🔴 Expired" : "🟢 Active";
+            const status = k.isPaused ? "⏸️ Paused" : (Date.now() > k.expiry) ? "🔴 Expired" : "🟢 Active";
             const lock = k.hwid ? "🔒 Locked" : "🔓 Unlocked";
             message += `${i+1}. \`${k.key}\` | ${status} | ${lock}\n`;
         });
         bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
     } catch (e) {
         bot.sendMessage(chatId, `⚠️ Error fetching your keys.`);
+    }
+});
+
+// --- ⏸️ OWNER ONLY: PAUSE ALL ACTIVE KEYS ---
+bot.onText(/\/pausekeys/, async (msg) => {
+    const chatId = msg.from.id;
+    if (chatId !== MAIN_OWNER_ID) return bot.sendMessage(chatId, "❌ Yeh command sirf Main Owner use kar sakta hai!");
+
+    try {
+        const currentTime = Date.now();
+        const activeKeys = await KeyModel.find({ isPaused: false, expiry: { $gt: currentTime } });
+
+        let count = 0;
+        for (const k of activeKeys) {
+            const remainingTime = k.expiry - currentTime; // Kitna time bacha hai
+            k.isPaused = true;
+            k.pausedRemainingTime = remainingTime;
+            await k.save();
+            count++;
+        }
+
+        bot.sendMessage(chatId, `⏸️ **All Keys Paused Successfully!**\n\n• **${count}** active keys frozen.\n• Timers have been safely saved. No keys will expire until unpaused.`, { parse_mode: 'Markdown' });
+    } catch (e) {
+        bot.sendMessage(chatId, `⚠️ Error pausing keys.`);
+    }
+});
+
+// --- ▶️ OWNER ONLY: UNPAUSE ALL PAUSED KEYS ---
+bot.onText(/\/unpausekeys/, async (msg) => {
+    const chatId = msg.from.id;
+    if (chatId !== MAIN_OWNER_ID) return bot.sendMessage(chatId, "❌ Yeh command sirf Main Owner use kar sakta hai!");
+
+    try {
+        const pausedKeys = await KeyModel.find({ isPaused: true });
+        const currentTime = Date.now();
+
+        let count = 0;
+        for (const k of pausedKeys) {
+            // Naya expiry time = Abhi ka time + jitna time pause hone se pehle bacha tha
+            k.expiry = currentTime + k.pausedRemainingTime;
+            k.isPaused = false;
+            k.pausedRemainingTime = 0;
+            await k.save();
+            count++;
+        }
+
+        bot.sendMessage(chatId, `▶️ **All Keys Resumed Successfully!**\n\n• **${count}** keys unpaused.\n• Timers are running again from where they left off!`, { parse_mode: 'Markdown' });
+    } catch (e) {
+        bot.sendMessage(chatId, `⚠️ Error unpausing keys.`);
     }
 });
 
@@ -381,7 +441,7 @@ bot.onText(/\/resellerkeys(?: (.+))?/, async (msg, match) => {
 
         let message = `📋 **KEYS GENERATED BY RESELLER \`${resellerId}\` (Last 25):**\n\n`;
         keys.forEach((k, i) => {
-            const status = (Date.now() > k.expiry) ? "🔴" : "🟢";
+            const status = k.isPaused ? "⏸️" : (Date.now() > k.expiry) ? "🔴" : "🟢";
             const lock = k.hwid ? "🔒" : "🔓";
             message += `${i+1}. \`${k.key}\` (${status} ${lock})\n`;
         });
@@ -429,7 +489,6 @@ bot.onText(/\/deloldkeys/, async (msg) => {
 
     try {
         const currentTime = Date.now();
-        // Deletes keys that are expired OR (not expired yet but never used/HWID is null)
         const result = await KeyModel.deleteMany({
             $or: [
                 { expiry: { $lt: currentTime } },
@@ -453,7 +512,7 @@ bot.onText(/\/allkeys/, async (msg) => {
 
         let message = `📋 **ALL RECENT KEYS (Max 25):**\n\n`;
         keys.forEach((k, i) => {
-            const status = (Date.now() > k.expiry) ? "🔴" : "🟢";
+            const status = k.isPaused ? "⏸️" : (Date.now() > k.expiry) ? "🔴" : "🟢";
             const lock = k.hwid ? "🔒" : "🔓";
             message += `${i+1}. \`${k.key}\` (${status} ${lock}) [Maker: \`${k.createdBy}\`]\n`;
         });
@@ -488,14 +547,16 @@ bot.onText(/\/systemstats/, async (msg) => {
 
     try {
         const totalKeys = await KeyModel.countDocuments();
-        const expiredKeys = await KeyModel.countDocuments({ expiry: { $lt: Date.now() } });
-        const activeKeys = totalKeys - expiredKeys;
+        const pausedKeysCount = await KeyModel.countDocuments({ isPaused: true });
+        const expiredKeys = await KeyModel.countDocuments({ expiry: { $lt: Date.now() }, isPaused: false });
+        const activeKeys = totalKeys - expiredKeys - pausedKeysCount;
         const lockedKeys = await KeyModel.countDocuments({ hwid: { $ne: null } });
         const totalAdmins = await AdminModel.countDocuments();
 
         let statsMsg = `📊 **SYSTEM STATS DASHBOARD** 📊\n\n`;
         statsMsg += `• Total Keys: **${totalKeys}**\n`;
         statsMsg += `• Active Keys: 🟢 **${activeKeys}**\n`;
+        statsMsg += `• Paused Keys: ⏸️ **${pausedKeysCount}**\n`;
         statsMsg += `• Expired Keys: 🔴 **${expiredKeys}**\n`;
         statsMsg += `• Hardware Locked Keys: 🔒 **${lockedKeys}**\n`;
         statsMsg += `• Total Sub-Admins: 👥 **${totalAdmins}**\n`;
@@ -512,7 +573,7 @@ bot.onText(/\/broadcast(?: (.+))?/, async (msg, match) => {
     if (chatId !== MAIN_OWNER_ID) return bot.sendMessage(chatId, "❌ Yeh command sirf Main Owner use kar sakta hai!");
 
     const broadcastMsg = match[1] ? match[1].trim() : "";
-    if (!broadcastMsg) {
+    if (!broadcastMsg.trim()) {
         return bot.sendMessage(chatId, "⚠️ Message toh likho!\nUsage: `/broadcast Hello Resellers, new update is live!`", { parse_mode: 'Markdown' });
     }
 
