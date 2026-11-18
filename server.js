@@ -15,6 +15,11 @@ const bot = new TelegramBot(TOKEN, { polling: true });
 const app = express();
 app.use(bodyParser.json());
 
+// --- 🔥 RENDER SLEEP PREVENTION & HEALTH CHECK ROUTE ---
+app.get('/', (req, res) => {
+    res.status(200).send('🚀 M1 Biskut Bot & License Server is Active and Running!');
+});
+
 // --- MONGODB SCHEMAS & MODELS ---
 mongoose.connect(MONGO_URI)
     .then(() => console.log('✅ Connected to MongoDB Atlas successfully!'))
@@ -363,7 +368,7 @@ bot.onText(/\/pausekeys/, async (msg) => {
 
         let count = 0;
         for (const k of activeKeys) {
-            const remainingTime = k.expiry - currentTime; // Kitna time bacha hai
+            const remainingTime = k.expiry - currentTime;
             k.isPaused = true;
             k.pausedRemainingTime = remainingTime;
             await k.save();
@@ -387,7 +392,6 @@ bot.onText(/\/unpausekeys/, async (msg) => {
 
         let count = 0;
         for (const k of pausedKeys) {
-            // Naya expiry time = Abhi ka time + jitna time pause hone se pehle bacha tha
             k.expiry = currentTime + k.pausedRemainingTime;
             k.isPaused = false;
             k.pausedRemainingTime = 0;
@@ -540,7 +544,7 @@ bot.onText(/\/delkey (.+)/, async (msg, match) => {
     }
 });
 
-// --- OWNER ONLY: SYSTEM STATS DASHBOARD ---
+// --- OWNERONLY: SYSTEM STATS DASHBOARD ---
 bot.onText(/\/systemstats/, async (msg) => {
     const chatId = msg.from.id;
     if (chatId !== MAIN_OWNER_ID) return bot.sendMessage(chatId, "❌ Yeh command sirf Main Owner use kar sakta hai!");
@@ -584,14 +588,21 @@ bot.onText(/\/broadcast(?: (.+))?/, async (msg, match) => {
             try {
                 await bot.sendMessage(admin.userId, `📢 **ANNOUNCEMENT FROM OWNER:**\n\n${broadcastMsg}`, { parse_mode: 'Markdown' });
                 count++;
-            } catch (err) {
-                // Ignore if bot was blocked by user
-            }
+            } catch (err) {}
         }
         bot.sendMessage(chatId, `✅ Broadcast sent successfully to **${count}** admins!`, { parse_mode: 'Markdown' });
     } catch (e) {
         bot.sendMessage(chatId, `⚠️ Error broadcasting message.`);
     }
+});
+
+// --- SAFETY CRASH HANDLERS ---
+process.on('uncaughtException', (err) => {
+    console.error('Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
 app.listen(PORT, () => {
