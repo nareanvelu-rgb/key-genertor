@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 
 // --- AROLINKS & FREE 12H KEY SETTINGS ---
 const AROLINKS_API_KEY = process.env.AROLINKS_API_KEY || 'ad0491fe393247ceeea006bbb9e13239be255e94';
-const CLAIM_PAGE_URL = process.env.CLAIM_PAGE_URL || 'https://m1cheats-freekey.netlify.app/';
+const CLAIM_PAGE_URL = process.env.CLAIM_PAGE_URL || 'https://your-site.netlify.app/';
 const LINK_SECRET = process.env.LINK_SECRET || 'M1_FREE_KEY_SECRET_2026';
 
 const bot = new TelegramBot(TOKEN, { polling: true });
@@ -55,7 +55,6 @@ const settingSchema = new mongoose.Schema({
 const freeSessionSchema = new mongoose.Schema({
     sessionId: { type: String, required: true, unique: true },
     token: { type: String, required: true },
-    ipHash: { type: String, default: null },
     status: { type: String, default: 'pending' }, // pending -> claimed
     issuedKey: { type: String, default: null },
     createdAt: { type: Number, default: () => Date.now() },
@@ -92,11 +91,6 @@ function makeUnique12hKey() {
     return `M1-12H-${p1}-${p2}-${p3}`;
 }
 
-function getClientIpHash(req) {
-    const rawIp = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').toString().split(',')[0].trim();
-    return crypto.createHash('sha256').update(rawIp + '|' + LINK_SECRET).digest('hex').slice(0, 32);
-}
-
 async function createTwelveHourKeyInDb() {
     const twelveHoursMs = 12 * 60 * 60 * 1000;
     for (let attempt = 0; attempt < 5; attempt++) {
@@ -119,49 +113,31 @@ async function createTwelveHourKeyInDb() {
     throw new Error('Could not generate unique key');
 }
 
-// --- 🔥 FREE 12H KEY API (AROLINKS) ---
+// --- 🔥 FREE 12H KEY API (HAR BAAR NAYA AROLINKS LINK + NAYI KEY) ---
 app.post('/api/free-key/start', async (req, res) => {
     try {
         if (await isMaintenanceMode()) {
             return res.json({ success: false, message: 'Server maintenance mein hai, baad mein try karo.' });
         }
 
-        const ipHash = getClientIpHash(req);
         const now = Date.now();
-
-        // Ek IP ko 12 hours mein sirf 1 free key mile
-        const existingClaim = await FreeSessionModel.findOne({
-            ipHash,
-            status: 'claimed',
-            createdAt: { $gt: now - (12 * 60 * 60 * 1000) }
-        });
-
-        if (existingClaim && existingClaim.issuedKey) {
-            return res.json({
-                success: true,
-                alreadyIssued: true,
-                key: existingClaim.issuedKey,
-                message: 'Aapki 12h free key pehle se generate ho chuki hai.'
-            });
-        }
-
         const sessionId = crypto.randomUUID();
         const token = makeToken(sessionId);
         const sep = CLAIM_PAGE_URL.includes('?') ? '&' : '?';
         const destinationUrl = `${CLAIM_PAGE_URL}${sep}sid=${encodeURIComponent(sessionId)}&tok=${encodeURIComponent(token)}`;
+        const uniqueAlias = `m1_${Date.now().toString(36)}_${crypto.randomBytes(2).toString('hex')}`;
 
-        const apiUrl = `https://arolinks.com/api?api=${encodeURIComponent(AROLINKS_API_KEY)}&url=${encodeURIComponent(destinationUrl)}&alias=${encodeURIComponent('m1_' + sessionId.slice(0, 8))}`;
+        const apiUrl = `https://arolinks.com/api?api=${encodeURIComponent(AROLINKS_API_KEY)}&url=${encodeURIComponent(destinationUrl)}&alias=${encodeURIComponent(uniqueAlias)}`;
         const response = await fetch(apiUrl);
         const data = await response.json();
 
         if (!data || data.status === 'error' || !data.shortenedUrl) {
-            return res.json({ success: false, message: 'Arolinks short link create nahi ho paya.' });
+            return res.json({ success: false, message: (data && data.message) || 'Arolinks short link create nahi ho paya.' });
         }
 
         await FreeSessionModel.create({
             sessionId,
             token,
-            ipHash,
             status: 'pending',
             issuedKey: null,
             createdAt: now,
@@ -198,6 +174,7 @@ app.post('/api/free-key/claim', async (req, res) => {
             return res.json({ success: false, message: 'Link expire ho gaya! Naya task start karo.' });
         }
 
+        // Agar isi exact link ko refresh kare toh is link ki key dikhaye, par naya start karne par bilkul nayi key banegi
         if (session.status === 'claimed' && session.issuedKey) {
             return res.json({
                 success: true,
