@@ -2,6 +2,8 @@ const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
 const bodyParser = require('body-parser');
 const mongoose = require('mongoose');
+const crypto = require('crypto');
+const cors = require('cors');
 
 // --- APNI DETAILS YAHAN DAALEIN ---
 const TOKEN = '8896652566:AAGS9oPW8sRZ-5964-Js4whQdYGPNuD443Q';
@@ -11,8 +13,14 @@ const MAIN_OWNER_ID = 1834775993;
 const MONGO_URI = process.env.MONGO_URI || 'YOUR_MONGODB_ATLAS_CONNECTION_STRING_HERE';
 const PORT = process.env.PORT || 3000;
 
+// --- AROLINKS & FREE 12H KEY SETTINGS ---
+const AROLINKS_API_KEY = process.env.AROLINKS_API_KEY || 'ad0491fe393247ceeea006bbb9e13239be255e94';
+const CLAIM_PAGE_URL = process.env.CLAIM_PAGE_URL || 'https://m1cheats-freekey.netlify.app/';
+const LINK_SECRET = process.env.LINK_SECRET || 'M1_FREE_KEY_SECRET_2026';
+
 const bot = new TelegramBot(TOKEN, { polling: true });
 const app = express();
+app.use(cors());
 app.use(bodyParser.json());
 
 // --- 🔥 HEALTH CHECK ROUTE ---
@@ -44,9 +52,20 @@ const settingSchema = new mongoose.Schema({
     value: { type: String }
 });
 
+const freeSessionSchema = new mongoose.Schema({
+    sessionId: { type: String, required: true, unique: true },
+    token: { type: String, required: true },
+    ipHash: { type: String, default: null },
+    status: { type: String, default: 'pending' }, // pending -> claimed
+    issuedKey: { type: String, default: null },
+    createdAt: { type: Number, default: () => Date.now() },
+    expiresAt: { type: Number, required: true }
+});
+
 const KeyModel = mongoose.model('Key', keySchema);
 const AdminModel = mongoose.model('Admin', adminSchema);
 const SettingModel = mongoose.model('Setting', settingSchema);
+const FreeSessionModel = mongoose.model('FreeSession', freeSessionSchema);
 
 // Helper functions
 async function isAdmin(userId) {
@@ -62,6 +81,149 @@ async function isMaintenanceMode() {
     return setting && setting.value === 'true';
 }
 
+function makeToken(sessionId) {
+    return crypto.createHmac('sha256', LINK_SECRET).update(sessionId).digest('hex').slice(0, 24);
+}
+
+function makeUnique12hKey() {
+    const p1 = crypto.randomBytes(2).toString('hex').toUpperCase();
+    const p2 = crypto.randomBytes(2).toString('hex').toUpperCase();
+    const p3 = crypto.randomBytes(2).toString('hex').toUpperCase();
+    return `M1-12H-${p1}-${p2}-${p3}`;
+}
+
+function getClientIpHash(req) {
+    const rawIp = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').toString().split(',')[0].trim();
+    return crypto.createHash('sha256').update(rawIp + '|' + LINK_SECRET).digest('hex').slice(0, 32);
+}
+
+async function createTwelveHourKeyInDb() {
+    const twelveHoursMs = 12 * 60 * 60 * 1000;
+    for (let attempt = 0; attempt < 5; attempt++) {
+        const newKey = makeUnique12hKey();
+        const expiryTime = Date.now() + twelveHoursMs;
+        try {
+            await KeyModel.create({
+                key: newKey,
+                expiry: expiryTime,
+                createdBy: MAIN_OWNER_ID,
+                hwid: null,
+                isPaused: false,
+                pausedRemainingTime: 0
+            });
+            return { key: newKey, expiry: expiryTime };
+        } catch (err) {
+            if (err.code !== 11000) throw err;
+        }
+    }
+    throw new Error('Could not generate unique key');
+}
+
+// --- 🔥 FREE 12H KEY API (AROLINKS) ---
+app.post('/api/free-key/start', async (req, res) => {
+    try {
+        if (await isMaintenanceMode()) {
+            return res.json({ success: false, message: 'Server maintenance mein hai, baad mein try karo.' });
+        }
+
+        const ipHash = getClientIpHash(req);
+        const now = Date.now();
+
+        // Ek IP ko 12 hours mein sirf 1 free key mile
+        const existingClaim = await FreeSessionModel.findOne({
+            ipHash,
+            status: 'claimed',
+            createdAt: { $gt: now - (12 * 60 * 60 * 1000) }
+        });
+
+        if (existingClaim && existingClaim.issuedKey) {
+            return res.json({
+                success: true,
+                alreadyIssued: true,
+                key: existingClaim.issuedKey,
+                message: 'Aapki 12h free key pehle se generate ho chuki hai.'
+            });
+        }
+
+        const sessionId = crypto.randomUUID();
+        const token = makeToken(sessionId);
+        const sep = CLAIM_PAGE_URL.includes('?') ? '&' : '?';
+        const destinationUrl = `${CLAIM_PAGE_URL}${sep}sid=${encodeURIComponent(sessionId)}&tok=${encodeURIComponent(token)}`;
+
+        const apiUrl = `https://arolinks.com/api?api=${encodeURIComponent(AROLINKS_API_KEY)}&url=${encodeURIComponent(destinationUrl)}&alias=${encodeURIComponent('m1_' + sessionId.slice(0, 8))}`;
+        const response = await fetch(apiUrl);
+        const data = await response.json();
+
+        if (!data || data.status === 'error' || !data.shortenedUrl) {
+            return res.json({ success: false, message: 'Arolinks short link create nahi ho paya.' });
+        }
+
+        await FreeSessionModel.create({
+            sessionId,
+            token,
+            ipHash,
+            status: 'pending',
+            issuedKey: null,
+            createdAt: now,
+            expiresAt: now + (30 * 60 * 1000)
+        });
+
+        return res.json({
+            success: true,
+            shortUrl: data.shortenedUrl
+        });
+    } catch (e) {
+        console.error('Free key start error:', e);
+        return res.json({ success: false, message: 'Server error while starting task.' });
+    }
+});
+
+app.post('/api/free-key/claim', async (req, res) => {
+    try {
+        if (await isMaintenanceMode()) {
+            return res.json({ success: false, message: 'Server maintenance mein hai.' });
+        }
+
+        const { sid, tok } = req.body || {};
+        if (!sid || !tok || makeToken(sid) !== tok) {
+            return res.json({ success: false, message: 'Invalid ya tampered session link!' });
+        }
+
+        const session = await FreeSessionModel.findOne({ sessionId: sid, token: tok });
+        if (!session) {
+            return res.json({ success: false, message: 'Session nahi mila!' });
+        }
+
+        if (Date.now() > session.expiresAt && session.status !== 'claimed') {
+            return res.json({ success: false, message: 'Link expire ho gaya! Naya task start karo.' });
+        }
+
+        if (session.status === 'claimed' && session.issuedKey) {
+            return res.json({
+                success: true,
+                alreadyClaimed: true,
+                key: session.issuedKey,
+                expiresAt: session.expiresAt
+            });
+        }
+
+        const created = await createTwelveHourKeyInDb();
+        session.status = 'claimed';
+        session.issuedKey = created.key;
+        await session.save();
+
+        return res.json({
+            success: true,
+            alreadyClaimed: false,
+            key: created.key,
+            expiresAt: created.expiry
+        });
+    } catch (e) {
+        console.error('Free key claim error:', e);
+        return res.json({ success: false, message: 'Key generate karne mein error aaya.' });
+    }
+});
+
 // --- 🔥 VERIFICATION API WITH MAINTENANCE CHECK ---
 app.post('/verify', async (req, res) => {
     const { key, hwid } = req.body;
@@ -71,7 +233,6 @@ app.post('/verify', async (req, res) => {
     }
 
     try {
-        // 🔥 MAINTENANCE MODE CHECK
         if (await isMaintenanceMode()) {
             return res.json({ 
                 success: false, 
@@ -234,7 +395,6 @@ bot.onText(/\/bulk(?: (.+))?/, async (msg, match) => {
             }
         }
 
-        // Insert in chunks of 1000 for performance
         let inserted = 0;
         const chunkSize = 1000;
         for (let i = 0; i < keysBatch.length; i += chunkSize) {
@@ -250,7 +410,6 @@ bot.onText(/\/bulk(?: (.+))?/, async (msg, match) => {
             }
         }
 
-        // Send keys as text file
         const keysText = generatedKeys.join('\n');
         const fileName = `bulk_keys_${count}_${days}days.txt`;
 
@@ -264,7 +423,6 @@ bot.onText(/\/bulk(?: (.+))?/, async (msg, match) => {
             { filename: fileName, contentType: 'text/plain' }
         );
 
-        // Send first 10 as preview
         const preview = generatedKeys.slice(0, 10).map((k, i) => `${i + 1}. \`${k}\``).join('\n');
         await bot.sendMessage(
             chatId,
