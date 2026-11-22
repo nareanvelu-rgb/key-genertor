@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 
 // --- AROLINKS & FREE 12H KEY SETTINGS ---
 const AROLINKS_API_KEY = process.env.AROLINKS_API_KEY || 'ad0491fe393247ceeea006bbb9e13239be255e94';
-const CLAIM_PAGE_URL = process.env.CLAIM_PAGE_URL || 'https://your-site.netlify.app/';
+const CLAIM_PAGE_URL = process.env.CLAIM_PAGE_URL || 'https://m1cheats-freekey.netlify.app/';
 const LINK_SECRET = process.env.LINK_SECRET || 'M1_FREE_KEY_SECRET_2026';
 
 const bot = new TelegramBot(TOKEN, { polling: true });
