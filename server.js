@@ -18,6 +18,8 @@ const AROLINKS_API_KEY = process.env.AROLINKS_API_KEY || 'ad0491fe393247ceeea006
 const CLAIM_PAGE_URL = process.env.CLAIM_PAGE_URL || 'https://m1cheats-freekey.netlify.app/';
 const LINK_SECRET = process.env.LINK_SECRET || 'M1_FREE_KEY_SECRET_2026';
 
+const COOLDOWN_MS = 12 * 60 * 60 * 1000; // 12 hours
+
 const bot = new TelegramBot(TOKEN, { polling: true });
 const app = express();
 app.use(cors());
@@ -55,16 +57,26 @@ const settingSchema = new mongoose.Schema({
 const freeSessionSchema = new mongoose.Schema({
     sessionId: { type: String, required: true, unique: true },
     token: { type: String, required: true },
+    deviceHash: { type: String, default: null },
+    deviceInfo: { type: Object, default: null },
     status: { type: String, default: 'pending' }, // pending -> claimed
     issuedKey: { type: String, default: null },
     createdAt: { type: Number, default: () => Date.now() },
     expiresAt: { type: Number, required: true }
 });
 
+const deviceCooldownSchema = new mongoose.Schema({
+    deviceHash: { type: String, required: true, unique: true },
+    deviceInfo: { type: Object, default: null },
+    lastGeneratedAt: { type: Number, required: true },
+    lastKey: { type: String, default: null }
+});
+
 const KeyModel = mongoose.model('Key', keySchema);
 const AdminModel = mongoose.model('Admin', adminSchema);
 const SettingModel = mongoose.model('Setting', settingSchema);
 const FreeSessionModel = mongoose.model('FreeSession', freeSessionSchema);
+const DeviceCooldownModel = mongoose.model('DeviceCooldown', deviceCooldownSchema);
 
 // Helper functions
 async function isAdmin(userId) {
@@ -82,6 +94,39 @@ async function isMaintenanceMode() {
 
 function makeToken(sessionId) {
     return crypto.createHmac('sha256', LINK_SECRET).update(sessionId).digest('hex').slice(0, 24);
+}
+
+function normalizeDeviceHash(rawHash) {
+    if (!rawHash || typeof rawHash !== 'string') return null;
+    const clean = rawHash.trim().toLowerCase();
+    return /^[a-f0-9]{16,128}$/.test(clean) ? clean : null;
+}
+
+function formatRemainingTime(ms) {
+    const totalSeconds = Math.max(1, Math.floor(ms / 1000));
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    return `${hours}h ${minutes}m ${seconds}s`;
+}
+
+async function checkDeviceCooldown(deviceHash) {
+    if (!deviceHash) return { blocked: false };
+    const record = await DeviceCooldownModel.findOne({ deviceHash });
+    if (!record) return { blocked: false, record: null };
+
+    const elapsed = Date.now() - record.lastGeneratedAt;
+    if (elapsed < COOLDOWN_MS) {
+        const remainingMs = COOLDOWN_MS - elapsed;
+        return {
+            blocked: true,
+            remainingMs,
+            remainingText: formatRemainingTime(remainingMs),
+            nextAllowedAt: record.lastGeneratedAt + COOLDOWN_MS,
+            record
+        };
+    }
+    return { blocked: false, record };
 }
 
 function makeUnique12hKey() {
@@ -113,11 +158,29 @@ async function createTwelveHourKeyInDb() {
     throw new Error('Could not generate unique key');
 }
 
-// --- 🔥 FREE 12H KEY API (HAR BAAR NAYA AROLINKS LINK + NAYI KEY) ---
+// --- 🔥 FREE 12H KEY API (DEVICE CHECK + 12HR COOLDOWN) ---
 app.post('/api/free-key/start', async (req, res) => {
     try {
         if (await isMaintenanceMode()) {
             return res.json({ success: false, message: 'Server maintenance mein hai, baad mein try karo.' });
+        }
+
+        const deviceHash = normalizeDeviceHash(req.body?.deviceHash);
+        const deviceInfo = req.body?.deviceInfo && typeof req.body.deviceInfo === 'object' ? req.body.deviceInfo : null;
+
+        if (!deviceHash) {
+            return res.json({ success: false, message: 'Device info read nahi ho paya. Browser refresh karke try karo.' });
+        }
+
+        const cooldown = await checkDeviceCooldown(deviceHash);
+        if (cooldown.blocked) {
+            return res.json({
+                success: false,
+                cooldown: true,
+                remainingMs: cooldown.remainingMs,
+                nextAllowedAt: cooldown.nextAllowedAt,
+                message: `please wait 12hrs before generating new key (${cooldown.remainingText} remaining)`
+            });
         }
 
         const now = Date.now();
@@ -138,6 +201,8 @@ app.post('/api/free-key/start', async (req, res) => {
         await FreeSessionModel.create({
             sessionId,
             token,
+            deviceHash,
+            deviceInfo,
             status: 'pending',
             issuedKey: null,
             createdAt: now,
@@ -161,6 +226,9 @@ app.post('/api/free-key/claim', async (req, res) => {
         }
 
         const { sid, tok } = req.body || {};
+        const incomingDeviceHash = normalizeDeviceHash(req.body?.deviceHash);
+        const incomingDeviceInfo = req.body?.deviceInfo && typeof req.body.deviceInfo === 'object' ? req.body.deviceInfo : null;
+
         if (!sid || !tok || makeToken(sid) !== tok) {
             return res.json({ success: false, message: 'Invalid ya tampered session link!' });
         }
@@ -170,11 +238,12 @@ app.post('/api/free-key/claim', async (req, res) => {
             return res.json({ success: false, message: 'Session nahi mila!' });
         }
 
-        if (Date.now() > session.expiresAt && session.status !== 'claimed') {
-            return res.json({ success: false, message: 'Link expire ho gaya! Naya task start karo.' });
+        const effectiveDeviceHash = incomingDeviceHash || session.deviceHash;
+        if (!effectiveDeviceHash) {
+            return res.json({ success: false, message: 'Device info missing hai.' });
         }
 
-        // Agar isi exact link ko refresh kare toh is link ki key dikhaye, par naya start karne par bilkul nayi key banegi
+        // Agar isi exact link ko refresh kare toh is link ki key dikhaye
         if (session.status === 'claimed' && session.issuedKey) {
             return res.json({
                 success: true,
@@ -184,10 +253,41 @@ app.post('/api/free-key/claim', async (req, res) => {
             });
         }
 
+        const cooldown = await checkDeviceCooldown(effectiveDeviceHash);
+        if (cooldown.blocked) {
+            return res.json({
+                success: false,
+                cooldown: true,
+                remainingMs: cooldown.remainingMs,
+                nextAllowedAt: cooldown.nextAllowedAt,
+                message: `please wait 12hrs before generating new key (${cooldown.remainingText} remaining)`
+            });
+        }
+
+        if (Date.now() > session.expiresAt) {
+            return res.json({ success: false, message: 'Link expire ho gaya! Naya task start karo.' });
+        }
+
         const created = await createTwelveHourKeyInDb();
+        const now = Date.now();
+
         session.status = 'claimed';
         session.issuedKey = created.key;
+        session.deviceHash = effectiveDeviceHash;
+        if (incomingDeviceInfo) session.deviceInfo = incomingDeviceInfo;
         await session.save();
+
+        await DeviceCooldownModel.findOneAndUpdate(
+            { deviceHash: effectiveDeviceHash },
+            {
+                $set: {
+                    deviceInfo: incomingDeviceInfo || session.deviceInfo || null,
+                    lastGeneratedAt: now,
+                    lastKey: created.key
+                }
+            },
+            { upsert: true, new: true }
+        );
 
         return res.json({
             success: true,
