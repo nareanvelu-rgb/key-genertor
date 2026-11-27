@@ -55,7 +55,7 @@ mongoose.connect(MONGO_URI)
 
 const keySchema = new mongoose.Schema({
     key: { type: String, required: true, unique: true },
-    panel: { type: String, default: 'DEFAULT' }, // 'DEFAULT' = purana panel, 'PAID_V2' = naya panel
+    panel: { type: String, default: 'DEFAULT' }, // 'DEFAULT' = purana/free panel, 'PAID_V2' = naya paid panel
     expiry: { type: Number, required: true },
     createdBy: { type: Number, required: true },
     hwid: { type: String, default: null },
@@ -403,7 +403,7 @@ bot.onText(/\/start/, async (msg) => {
         helpText += "\n🔧 OWNER MAINTENANCE MODE:\n";
         helpText += "• /maintenance on|off|status\n\n";
         helpText += "📦 BULK KEY GENERATION:\n";
-        helpText += "• /bulk [count] [days]\n\n";
+        helpText += "• /bulk [count] [days] - Choose Paid or Free panel\n\n";
         helpText += "⚡ STATS & MGMT:\n";
         helpText += "• /resellerstats, /resellerkeys [ID], /allkeys, /systemstats\n";
         helpText += "• /pausekeys, /unpausekeys\n";
@@ -417,6 +417,7 @@ bot.onText(/\/start/, async (msg) => {
 
 // --- 🔥 /newkey [days] -> PAID_V2 KEY GENERATOR ---
 const pendingNewKey = new Map();
+const pendingBulkKey = new Map();
 
 bot.onText(/\/newkey(?: (.+))?/, async (msg, match) => {
     const userId = msg.from.id;
@@ -443,15 +444,143 @@ bot.onText(/\/newkey(?: (.+))?/, async (msg, match) => {
     );
 });
 
+// --- 🔥 OWNER ONLY: BULK KEY GENERATION (ASK PAID VS FREE) ---
+bot.onText(/\/bulk(?: (.+))?/, async (msg, match) => {
+    const chatId = msg.from.id;
+    if (chatId !== MAIN_OWNER_ID) return bot.sendMessage(chatId, "❌ Yeh command sirf Main Owner use kar sakta hai!");
+
+    const input = match[1] ? match[1].trim().split(/\s+/) : [];
+    const count = parseInt(input[0]);
+    const days = parseInt(input[1]) || 30;
+
+    if (!count || isNaN(count) || count < 1 || count > 10000) {
+        return bot.sendMessage(chatId, "⚠️ Usage: /bulk [count] [days]\nExample: /bulk 4000 30");
+    }
+
+    const reqId = `${chatId}_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`;
+    pendingBulkKey.set(reqId, { userId: chatId, replyChatId: msg.chat.id, count, days });
+
+    await bot.sendMessage(
+        msg.chat.id,
+        `📦 Bulk Keys Setup\n\nCount: ${count} keys\nValidity: ${days} days\n\nKaunsi key banani hai?`,
+        {
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        { text: "💎 Paid Key (PAID_V2)", callback_data: `bulkpanel:PAID_V2:${reqId}` },
+                        { text: "🆓 Free Key (DEFAULT)", callback_data: `bulkpanel:DEFAULT:${reqId}` }
+                    ]
+                ]
+            }
+        }
+    );
+});
+
+async function runBulkGeneration(query, pending, selectedPanel) {
+    const { userId, replyChatId, count, days } = pending;
+    const labelType = selectedPanel === 'PAID_V2' ? 'Paid (PAID_V2)' : 'Free (DEFAULT)';
+
+    const statusMsg = await bot.sendMessage(
+        replyChatId,
+        `⏳ Generating ${count} ${labelType} keys (${days} days)...`
+    );
+
+    try {
+        const expiryTime = Date.now() + (days * 24 * 60 * 60 * 1000);
+        const keysBatch = [];
+        const generatedKeys = [];
+        const usedSet = new Set();
+
+        while (generatedKeys.length < count) {
+            const newKey = generateRandomM1Key();
+            if (!usedSet.has(newKey)) {
+                usedSet.add(newKey);
+                generatedKeys.push(newKey);
+                keysBatch.push({
+                    key: newKey,
+                    panel: selectedPanel,
+                    expiry: expiryTime,
+                    createdBy: userId,
+                    hwid: null,
+                    isPaused: false,
+                    pausedRemainingTime: 0
+                });
+            }
+        }
+
+        let inserted = 0;
+        const chunkSize = 1000;
+        for (let i = 0; i < keysBatch.length; i += chunkSize) {
+            const chunk = keysBatch.slice(i, i + chunkSize);
+            const result = await KeyModel.insertMany(chunk, { ordered: false });
+            inserted += result.length;
+
+            if (i % 2000 === 0 && i > 0) {
+                await bot.editMessageText(
+                    `⏳ Generating ${labelType} keys...\n\n✅ ${inserted}/${count} completed`,
+                    { chat_id: replyChatId, message_id: statusMsg.message_id }
+                ).catch(() => {});
+            }
+        }
+
+        const keysText = generatedKeys.join('\n');
+        const panelTag = selectedPanel === 'PAID_V2' ? 'paid_v2' : 'free_default';
+        const fileName = `bulk_${panelTag}_${count}_${days}days.txt`;
+
+        await bot.sendDocument(
+            replyChatId,
+            Buffer.from(keysText, 'utf-8'),
+            {
+                caption: `✅ ${count} ${labelType} Keys Generated!\nPanel: ${selectedPanel}\nValidity: ${days} Days`
+            },
+            { filename: fileName, contentType: 'text/plain' }
+        );
+
+        const preview = generatedKeys.slice(0, 10).map((k, i) => `${i + 1}. ${k}`).join('\n');
+        await bot.sendMessage(replyChatId, `📋 First 10 Keys (${selectedPanel}):\n\n${preview}`);
+        await bot.deleteMessage(replyChatId, statusMsg.message_id).catch(() => {});
+        await bot.answerCallbackQuery(query.id, { text: `${count} ${selectedPanel} keys ready!` }).catch(() => {});
+    } catch (e) {
+        console.error('Bulk gen error:', e);
+        await bot.sendMessage(replyChatId, `⚠️ Error generating bulk keys: ${e.message}`);
+        await bot.answerCallbackQuery(query.id, { text: "Bulk generation error!" }).catch(() => {});
+    }
+}
+
 bot.on('callback_query', async (query) => {
     try {
         const data = query.data || "";
-        if (!data.startsWith("paidv2:")) return;
-
-        const reqId = data.slice("paidv2:".length);
         const clickerId = query.from.id;
         const replyChatId = query.message ? query.message.chat.id : clickerId;
 
+        if (data.startsWith("bulkpanel:")) {
+            const parts = data.split(":");
+            const selectedPanel = parts[1] === 'PAID_V2' ? 'PAID_V2' : 'DEFAULT';
+            const reqId = parts.slice(2).join(":");
+
+            const pending = pendingBulkKey.get(reqId);
+            if (!pending) {
+                return bot.answerCallbackQuery(query.id, {
+                    text: "Bulk request expire ho gaya, /bulk dobara bhejein."
+                });
+            }
+
+            if (pending.userId !== clickerId && clickerId !== MAIN_OWNER_ID) {
+                return bot.answerCallbackQuery(query.id, {
+                    text: "Yeh button sirf Main Owner ke liye hai.",
+                    show_alert: true
+                });
+            }
+
+            pendingBulkKey.delete(reqId);
+            await bot.answerCallbackQuery(query.id, { text: `${selectedPanel} bulk shuru...` });
+            await runBulkGeneration(query, pending, selectedPanel);
+            return;
+        }
+
+        if (!data.startsWith("paidv2:")) return;
+
+        const reqId = data.slice("paidv2:".length);
         const pending = pendingNewKey.get(reqId);
         if (!pending) {
             return bot.answerCallbackQuery(query.id, {
@@ -636,77 +765,6 @@ bot.onText(/\/maintenance(?: (.+))?/, async (msg, match) => {
         bot.sendMessage(chatId, `🔧 Maintenance Status: ${isOn ? '🔒 ON' : '🔓 OFF'}`);
     } else {
         bot.sendMessage(chatId, "⚠️ Usage:\n/maintenance on\n/maintenance off\n/maintenance status");
-    }
-});
-
-// --- 🔥 OWNER ONLY: BULK KEY GENERATION ---
-bot.onText(/\/bulk(?: (.+))?/, async (msg, match) => {
-    const chatId = msg.from.id;
-    if (chatId !== MAIN_OWNER_ID) return bot.sendMessage(chatId, "❌ Yeh command sirf Main Owner use kar sakta hai!");
-
-    const input = match[1] ? match[1].trim().split(/\s+/) : [];
-    const count = parseInt(input[0]);
-    const days = parseInt(input[1]) || 30;
-
-    if (!count || isNaN(count) || count < 1 || count > 10000) {
-        return bot.sendMessage(chatId, "⚠️ Usage: /bulk [count] [days]\nExample: /bulk 4000 30");
-    }
-
-    const statusMsg = await bot.sendMessage(chatId, `⏳ Generating ${count} keys (${days} days)...`);
-
-    try {
-        const expiryTime = Date.now() + (days * 24 * 60 * 60 * 1000);
-        const keysBatch = [];
-        const generatedKeys = [];
-        const usedSet = new Set();
-
-        while (generatedKeys.length < count) {
-            const newKey = generateRandomM1Key();
-            if (!usedSet.has(newKey)) {
-                usedSet.add(newKey);
-                generatedKeys.push(newKey);
-                keysBatch.push({
-                    key: newKey,
-                    panel: 'DEFAULT',
-                    expiry: expiryTime,
-                    createdBy: chatId,
-                    hwid: null,
-                    isPaused: false
-                });
-            }
-        }
-
-        let inserted = 0;
-        const chunkSize = 1000;
-        for (let i = 0; i < keysBatch.length; i += chunkSize) {
-            const chunk = keysBatch.slice(i, i + chunkSize);
-            const result = await KeyModel.insertMany(chunk, { ordered: false });
-            inserted += result.length;
-
-            if (i % 2000 === 0 && i > 0) {
-                await bot.editMessageText(
-                    `⏳ Generating keys...\n\n✅ ${inserted}/${count} completed`,
-                    { chat_id: chatId, message_id: statusMsg.message_id }
-                ).catch(() => {});
-            }
-        }
-
-        const keysText = generatedKeys.join('\n');
-        const fileName = `bulk_keys_${count}_${days}days.txt`;
-
-        await bot.sendDocument(
-            chatId,
-            Buffer.from(keysText, 'utf-8'),
-            { caption: `✅ ${count} Keys Generated Successfully!\nValidity: ${days} Days` },
-            { filename: fileName, contentType: 'text/plain' }
-        );
-
-        const preview = generatedKeys.slice(0, 10).map((k, i) => `${i + 1}. ${k}`).join('\n');
-        await bot.sendMessage(chatId, `📋 First 10 Keys:\n\n${preview}`);
-        await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-    } catch (e) {
-        console.error('Bulk gen error:', e);
-        await bot.sendMessage(chatId, `⚠️ Error generating bulk keys: ${e.message}`);
     }
 });
 
