@@ -20,7 +20,25 @@ const LINK_SECRET = process.env.LINK_SECRET || 'M1_FREE_KEY_SECRET_2026';
 
 const COOLDOWN_MS = 12 * 60 * 60 * 1000; // 12 hours
 
-const bot = new TelegramBot(TOKEN, { polling: true });
+const bot = new TelegramBot(TOKEN, {
+    polling: {
+        interval: 300,
+        autoStart: true,
+        params: { timeout: 10 }
+    }
+});
+
+bot.on('polling_error', (err) => {
+    console.error('Polling error:', err.code || err.message);
+    if (err.code === 'ETELEGRAM' && String(err.message).includes('409')) {
+        setTimeout(() => {
+            bot.stopPolling()
+                .then(() => bot.startPolling())
+                .catch((e) => console.error('Restart polling failed:', e.message));
+        }, 2000);
+    }
+});
+
 const app = express();
 app.use(cors());
 app.use(bodyParser.json());
@@ -131,10 +149,15 @@ async function checkDeviceCooldown(deviceHash) {
 }
 
 function generateRandomM1Key() {
-    const p1 = Math.random().toString(36).substring(2, 6).toUpperCase().padEnd(4, 'X');
-    const p2 = Math.random().toString(36).substring(2, 6).toUpperCase().padEnd(4, 'X');
-    const p3 = Math.random().toString(36).substring(2, 6).toUpperCase().padEnd(4, 'X');
-    return `M1-${p1}-${p2}-${p3}`;
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    const part = () => {
+        let out = '';
+        for (let i = 0; i < 4; i++) {
+            out += chars[crypto.randomInt(0, chars.length)];
+        }
+        return out;
+    };
+    return `M1-${part()}-${part()}-${part()}`;
 }
 
 function makeUnique12hKey() {
@@ -368,73 +391,51 @@ bot.onText(/\/start/, async (msg) => {
     const chatId = msg.from.id;
     if (!(await isAdmin(chatId))) return bot.sendMessage(chatId, "❌ Access Denied!");
 
-    let helpText = "👑 **M1 BISKUT KEY GENERATOR** 👑\n\n";
-    helpText += "• `/newkey [days]` - Choose Panel & Generate Key\n";
-    helpText += "• `/gen [days]` - Generate Key (DEFAULT panel)\n";
-    helpText += "• `/gen [KEY] [days]` - Custom Key (DEFAULT panel)\n";
-    helpText += "• `/mykeys` - View your keys\n";
-    helpText += "• `/reset [KEY]` - Reset HWID\n";
-    helpText += "• `/mycredits` - Check credits\n";
+    let helpText = "👑 M1 BISKUT KEY GENERATOR 👑\n\n";
+    helpText += "• /newkey [days] - Generate PAID_V2 Key\n";
+    helpText += "• /gen [days] - Generate DEFAULT Key\n";
+    helpText += "• /gen [KEY] [days] - Custom DEFAULT Key\n";
+    helpText += "• /mykeys - View your keys\n";
+    helpText += "• /reset [KEY] - Reset HWID\n";
+    helpText += "• /mycredits - Check credits\n";
 
     if (chatId === MAIN_OWNER_ID) {
-        helpText += "\n🔧 **OWNER MAINTENANCE MODE:**\n";
-        helpText += "• `/maintenance on` - 🔒 Enable Maintenance\n";
-        helpText += "• `/maintenance off` - 🔓 Disable Maintenance\n";
-        helpText += "• `/maintenance status` - Check status\n\n";
-
-        helpText += "\n📦 **BULK KEY GENERATION (OWNER ONLY):**\n";
-        helpText += "• `/bulk [count] [days]` - Generate multiple keys\n";
-        helpText += "   Example: `/bulk 4000 30` (4000 keys, 30 days)\n\n";
-
-        helpText += "⚡ **STATS:**\n";
-        helpText += "• `/resellerstats` - Reseller stats\n";
-        helpText += "• `/resellerkeys [ID]` - View reseller keys\n";
-        helpText += "• `/allkeys` - All keys\n";
-        helpText += "• `/systemstats` - Dashboard\n\n";
-
-        helpText += "⏸️ **PAUSE CONTROL:**\n";
-        helpText += "• `/pausekeys` - Pause all keys\n";
-        helpText += "• `/unpausekeys` - Resume all keys\n\n";
-
-        helpText += "🗑️ **CLEANUP:**\n";
-        helpText += "• `/delkey [KEY]` - Delete key\n";
-        helpText += "• `/resellerdelkeys [ID]` - Delete reseller keys\n";
-        helpText += "• `/deloldkeys` - Delete expired/unused\n";
-        helpText += "• `/delallkeys` - Delete ALL keys\n\n";
-
-        helpText += "👑 **ADMIN MGMT:**\n";
-        helpText += "• `/addadmin [ID] [Credits]`\n";
-        helpText += "• `/addcredits [ID] [Credits]`\n";
-        helpText += "• `/deladmin [ID]`\n";
-        helpText += "• `/adminlist`\n";
-        helpText += "• `/broadcast [Message]`\n";
+        helpText += "\n🔧 OWNER MAINTENANCE MODE:\n";
+        helpText += "• /maintenance on|off|status\n\n";
+        helpText += "📦 BULK KEY GENERATION:\n";
+        helpText += "• /bulk [count] [days]\n\n";
+        helpText += "⚡ STATS & MGMT:\n";
+        helpText += "• /resellerstats, /resellerkeys [ID], /allkeys, /systemstats\n";
+        helpText += "• /pausekeys, /unpausekeys\n";
+        helpText += "• /delkey [KEY], /resellerdelkeys [ID], /deloldkeys, /delallkeys\n";
+        helpText += "• /addadmin [ID] [Credits], /addcredits [ID] [Credits], /deladmin [ID], /adminlist\n";
+        helpText += "• /broadcast [Message]\n";
     }
 
-    bot.sendMessage(chatId, helpText, { parse_mode: 'Markdown' });
+    bot.sendMessage(chatId, helpText);
 });
 
-// --- 🔥 PANEL SELECTION KEY GENERATOR (/newkey) ---
-const pendingPanelKey = new Map();
+// --- 🔥 /newkey [days] -> PAID_V2 KEY GENERATOR ---
+const pendingNewKey = new Map();
 
 bot.onText(/\/newkey(?: (.+))?/, async (msg, match) => {
     const userId = msg.from.id;
     const replyChatId = msg.chat.id;
     if (!(await isAdmin(userId))) return bot.sendMessage(replyChatId, "❌ Unauthorized!");
 
-    const days = parseInt(match && match[1]) || 30;
-    const reqId = `${userId}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-    pendingPanelKey.set(reqId, { userId, replyChatId, days, createdAt: Date.now() });
+    const parsedDays = parseInt(match && match[1]);
+    const days = (!isNaN(parsedDays) && parsedDays > 0) ? parsedDays : 30;
+    const reqId = `${userId}_${Date.now()}_${crypto.randomBytes(2).toString('hex')}`;
+    pendingNewKey.set(reqId, { userId, replyChatId, days, panel: 'PAID_V2' });
 
     await bot.sendMessage(
         replyChatId,
-        `🔑 **Key Generate (${days} Days)**\n\nKis panel ki key banani hai?`,
+        `💎 PAID_V2 Key (${days} Days)\n\nConfirm karke key generate karo:`,
         {
-            parse_mode: 'Markdown',
             reply_markup: {
                 inline_keyboard: [
                     [
-                        { text: "📦 Purana Panel (DEFAULT)", callback_data: `genpanel:DEFAULT:${reqId}` },
-                        { text: "💎 Naya Panel (PAID_V2)", callback_data: `genpanel:PAID_V2:${reqId}` }
+                        { text: `✅ Generate PAID_V2 (${days}d)`, callback_data: `paidv2:${reqId}` }
                     ]
                 ]
             }
@@ -445,20 +446,16 @@ bot.onText(/\/newkey(?: (.+))?/, async (msg, match) => {
 bot.on('callback_query', async (query) => {
     try {
         const data = query.data || "";
-        if (!data.startsWith("genpanel:")) return;
+        if (!data.startsWith("paidv2:")) return;
 
-        const parts = data.split(":");
-        const selectedPanel = parts[1];
-        const reqId = parts.slice(2).join(":");
-
+        const reqId = data.slice("paidv2:".length);
         const clickerId = query.from.id;
         const replyChatId = query.message ? query.message.chat.id : clickerId;
 
-        const pending = pendingPanelKey.get(reqId);
+        const pending = pendingNewKey.get(reqId);
         if (!pending) {
             return bot.answerCallbackQuery(query.id, {
-                text: "Request expire ho gaya, /newkey dobara bhejein.",
-                show_alert: false
+                text: "Request expire ho gaya, /newkey dobara bhejein."
             });
         }
 
@@ -469,7 +466,7 @@ bot.on('callback_query', async (query) => {
             });
         }
 
-        pendingPanelKey.delete(reqId);
+        pendingNewKey.delete(reqId);
         const days = pending.days;
         const requiredCredits = days;
 
@@ -477,7 +474,7 @@ bot.on('callback_query', async (query) => {
             const adminData = await AdminModel.findOne({ userId: clickerId });
             if (!adminData || adminData.credits < requiredCredits) {
                 await bot.answerCallbackQuery(query.id, { text: "Insufficient credits!" });
-                return bot.sendMessage(replyChatId, `❌ Need **${requiredCredits}** credits.`, { parse_mode: 'Markdown' });
+                return bot.sendMessage(replyChatId, `❌ Need ${requiredCredits} credits.`);
             }
             adminData.credits -= requiredCredits;
             await adminData.save();
@@ -492,7 +489,7 @@ bot.on('callback_query', async (query) => {
             try {
                 await KeyModel.create({
                     key: newKey,
-                    panel: selectedPanel,
+                    panel: 'PAID_V2',
                     expiry: expiryTime,
                     createdBy: clickerId,
                     hwid: null,
@@ -511,18 +508,97 @@ bot.on('callback_query', async (query) => {
                 await AdminModel.findOneAndUpdate({ userId: clickerId }, { $inc: { credits: requiredCredits } });
             }
             await bot.answerCallbackQuery(query.id, { text: "Key generate nahi ho payi!" });
-            return bot.sendMessage(replyChatId, "⚠️ Unique key generate karne mein problem aayi, dobara try karo.");
+            return bot.sendMessage(replyChatId, "⚠️ Unique key generate nahi ho payi, dobara try karo.");
         }
 
-        await bot.answerCallbackQuery(query.id, { text: `${selectedPanel} key ban gayi!` });
-        await bot.sendMessage(
-            replyChatId,
-            `✅ **Key Generated!**\n\n🏷️ Panel: **${selectedPanel}**\n🔑 Key: \`${newKey}\`\n⏳ Validity: **${days} Days**`,
-            { parse_mode: 'Markdown' }
-        );
+        await bot.answerCallbackQuery(query.id, { text: "PAID_V2 key generated!" });
+
+        let outText = `✅ PAID_V2 Key Generated!\n\n`;
+        outText += `Panel: PAID_V2\n`;
+        outText += `Validity: ${days} Days\n\n`;
+        outText += `Copy & Paste Key:\n${newKey}`;
+
+        if (clickerId !== MAIN_OWNER_ID) {
+            const updatedAdmin = await AdminModel.findOne({ userId: clickerId });
+            outText += `\n\nCredits Left: ${updatedAdmin ? updatedAdmin.credits : 0}`;
+        }
+
+        await bot.sendMessage(replyChatId, outText);
     } catch (err) {
         console.error("Callback query error:", err);
-        bot.answerCallbackQuery(query.id, { text: "Error aaya, console check karo." }).catch(() => {});
+        bot.answerCallbackQuery(query.id, { text: "Error aaya!" }).catch(() => {});
+    }
+});
+
+// --- 🔥 /gen [days] -> DEFAULT PANEL KEY GENERATOR ---
+bot.onText(/\/gen(?: (.+))?/, async (msg, match) => {
+    const userId = msg.from.id;
+    const replyChatId = msg.chat.id;
+    if (!(await isAdmin(userId))) return bot.sendMessage(replyChatId, "❌ Unauthorized!");
+
+    let inputArg = match[1] ? match[1].trim() : "";
+    let customKey = "";
+    let days = 30;
+
+    if (inputArg) {
+        const parts = inputArg.split(/\s+/);
+        if (parts.length === 2) {
+            customKey = parts[0].toUpperCase();
+            days = parseInt(parts[1]) || 30;
+        } else if (!isNaN(parts[0])) {
+            days = parseInt(parts[0]) || 30;
+        } else {
+            customKey = parts[0].toUpperCase();
+        }
+    }
+
+    const requiredCredits = days;
+
+    if (userId !== MAIN_OWNER_ID) {
+        try {
+            const adminData = await AdminModel.findOne({ userId: userId });
+            if (!adminData || adminData.credits < requiredCredits) {
+                const currentCreds = adminData ? adminData.credits : 0;
+                return bot.sendMessage(replyChatId, `❌ Insufficient Credits!\nNeed: ${requiredCredits}\nHave: ${currentCreds}`);
+            }
+            adminData.credits -= requiredCredits;
+            await adminData.save();
+        } catch (e) {
+            return bot.sendMessage(replyChatId, "⚠️ DB error.");
+        }
+    }
+
+    if (!customKey) {
+        customKey = generateRandomM1Key();
+    }
+
+    const expiryTime = Date.now() + (days * 24 * 60 * 60 * 1000);
+    try {
+        await KeyModel.create({
+            key: customKey,
+            panel: 'DEFAULT',
+            expiry: expiryTime,
+            createdBy: userId,
+            hwid: null,
+            isPaused: false,
+            pausedRemainingTime: 0
+        });
+
+        let successMsg = `✅ DEFAULT Key Generated!\n\n`;
+        successMsg += `Panel: DEFAULT\n`;
+        successMsg += `Validity: ${days} Days\n\n`;
+        successMsg += `Copy & Paste Key:\n${customKey}`;
+
+        if (userId !== MAIN_OWNER_ID) {
+            const updatedAdmin = await AdminModel.findOne({ userId: userId });
+            successMsg += `\n\nCredits Left: ${updatedAdmin ? updatedAdmin.credits : 0}`;
+        }
+        bot.sendMessage(replyChatId, successMsg);
+    } catch (e) {
+        if (userId !== MAIN_OWNER_ID) {
+            await AdminModel.findOneAndUpdate({ userId: userId }, { $inc: { credits: requiredCredits } });
+        }
+        bot.sendMessage(replyChatId, "⚠️ Key already exists! (Credits refunded)");
     }
 });
 
@@ -540,7 +616,7 @@ bot.onText(/\/maintenance(?: (.+))?/, async (msg, match) => {
                 { value: 'true' },
                 { upsert: true, new: true }
             );
-            bot.sendMessage(chatId, "🔒 **MAINTENANCE MODE ON**\n\nAb koi bhi user panel access nahi kar payega. Sabko 'MAINTENANCE PLEASE WAIT' message dikhega.", { parse_mode: 'Markdown' });
+            bot.sendMessage(chatId, "🔒 MAINTENANCE MODE ON\n\nAb koi bhi user panel access nahi kar payega.");
         } catch (e) {
             bot.sendMessage(chatId, `⚠️ Error enabling maintenance: ${e.message}`);
         }
@@ -551,15 +627,15 @@ bot.onText(/\/maintenance(?: (.+))?/, async (msg, match) => {
                 { value: 'false' },
                 { upsert: true, new: true }
             );
-            bot.sendMessage(chatId, "🔓 **MAINTENANCE MODE OFF**\n\nAb sab users normal access kar sakte hain.", { parse_mode: 'Markdown' });
+            bot.sendMessage(chatId, "🔓 MAINTENANCE MODE OFF\n\nAb sab users normal access kar sakte hain.");
         } catch (e) {
             bot.sendMessage(chatId, `⚠️ Error disabling maintenance: ${e.message}`);
         }
     } else if (arg === 'status') {
         const isOn = await isMaintenanceMode();
-        bot.sendMessage(chatId, `🔧 **Maintenance Status:** ${isOn ? '🔒 ON (Panel locked)' : '🔓 OFF (Panel active)'}`, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, `🔧 Maintenance Status: ${isOn ? '🔒 ON' : '🔓 OFF'}`);
     } else {
-        bot.sendMessage(chatId, "⚠️ **Usage:**\n`/maintenance on` - Enable\n`/maintenance off` - Disable\n`/maintenance status` - Check", { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, "⚠️ Usage:\n/maintenance on\n/maintenance off\n/maintenance status");
     }
 });
 
@@ -568,15 +644,15 @@ bot.onText(/\/bulk(?: (.+))?/, async (msg, match) => {
     const chatId = msg.from.id;
     if (chatId !== MAIN_OWNER_ID) return bot.sendMessage(chatId, "❌ Yeh command sirf Main Owner use kar sakta hai!");
 
-    const input = match[1] ? match[1].trim().split(" ") : [];
+    const input = match[1] ? match[1].trim().split(/\s+/) : [];
     const count = parseInt(input[0]);
     const days = parseInt(input[1]) || 30;
 
     if (!count || isNaN(count) || count < 1 || count > 10000) {
-        return bot.sendMessage(chatId, "⚠️ **Sahi format use karo!**\n\nUsage: `/bulk [count] [days]`\nExample: `/bulk 4000 30`\n\n• Max 10,000 keys ek baar mein\n• Days default 30 hain", { parse_mode: 'Markdown' });
+        return bot.sendMessage(chatId, "⚠️ Usage: /bulk [count] [days]\nExample: /bulk 4000 30");
     }
 
-    const statusMsg = await bot.sendMessage(chatId, `⏳ Generating **${count}** keys (${days} days)...\n\nPlease wait...`, { parse_mode: 'Markdown' });
+    const statusMsg = await bot.sendMessage(chatId, `⏳ Generating ${count} keys (${days} days)...`);
 
     try {
         const expiryTime = Date.now() + (days * 24 * 60 * 60 * 1000);
@@ -586,7 +662,6 @@ bot.onText(/\/bulk(?: (.+))?/, async (msg, match) => {
 
         while (generatedKeys.length < count) {
             const newKey = generateRandomM1Key();
-
             if (!usedSet.has(newKey)) {
                 usedSet.add(newKey);
                 generatedKeys.push(newKey);
@@ -610,8 +685,8 @@ bot.onText(/\/bulk(?: (.+))?/, async (msg, match) => {
 
             if (i % 2000 === 0 && i > 0) {
                 await bot.editMessageText(
-                    `⏳ Generating keys...\n\n✅ **${inserted}/${count}** completed`,
-                    { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' }
+                    `⏳ Generating keys...\n\n✅ ${inserted}/${count} completed`,
+                    { chat_id: chatId, message_id: statusMsg.message_id }
                 ).catch(() => {});
             }
         }
@@ -622,20 +697,12 @@ bot.onText(/\/bulk(?: (.+))?/, async (msg, match) => {
         await bot.sendDocument(
             chatId,
             Buffer.from(keysText, 'utf-8'),
-            {
-                caption: `✅ **${count} Keys Generated Successfully!**\n\n📅 Validity: **${days} Days**\n📦 Total: **${count} keys**\n\nAll keys are ready to use!`,
-                parse_mode: 'Markdown'
-            },
+            { caption: `✅ ${count} Keys Generated Successfully!\nValidity: ${days} Days` },
             { filename: fileName, contentType: 'text/plain' }
         );
 
-        const preview = generatedKeys.slice(0, 10).map((k, i) => `${i + 1}. \`${k}\``).join('\n');
-        await bot.sendMessage(
-            chatId,
-            `📋 **First 10 Keys Preview:**\n\n${preview}\n\n...and **${count - 10}** more in file!`,
-            { parse_mode: 'Markdown' }
-        );
-
+        const preview = generatedKeys.slice(0, 10).map((k, i) => `${i + 1}. ${k}`).join('\n');
+        await bot.sendMessage(chatId, `📋 First 10 Keys:\n\n${preview}`);
         await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
     } catch (e) {
         console.error('Bulk gen error:', e);
@@ -649,15 +716,15 @@ bot.onText(/\/mycredits/, async (msg) => {
     if (!(await isAdmin(chatId))) return bot.sendMessage(chatId, "❌ Unauthorized!");
 
     if (chatId === MAIN_OWNER_ID) {
-        return bot.sendMessage(chatId, "👑 **Main Owner:** Unlimited credits!", { parse_mode: 'Markdown' });
+        return bot.sendMessage(chatId, "👑 Main Owner: Unlimited credits!");
     }
 
     try {
         const adminData = await AdminModel.findOne({ userId: chatId });
         const credits = adminData ? adminData.credits : 0;
-        bot.sendMessage(chatId, `💰 **Your Credits:** \`${credits}\``, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, `💰 Your Credits: ${credits}`);
     } catch (e) {
-        bot.sendMessage(chatId, `⚠️ Error fetching credits.`);
+        bot.sendMessage(chatId, "⚠️ Error fetching credits.");
     }
 });
 
@@ -666,19 +733,19 @@ bot.onText(/\/addadmin(?: (.+))?/, async (msg, match) => {
     const chatId = msg.from.id;
     if (chatId !== MAIN_OWNER_ID) return bot.sendMessage(chatId, "❌ Sirf Main Owner!");
 
-    const input = match[1] ? match[1].trim().split(" ") : [];
+    const input = match[1] ? match[1].trim().split(/\s+/) : [];
     const newAdminId = parseInt(input[0]);
     const credits = parseInt(input[1]) || 0;
 
     if (!newAdminId || isNaN(newAdminId)) {
-        return bot.sendMessage(chatId, "⚠️ Usage: `/addadmin 123456789 500`", { parse_mode: 'Markdown' });
+        return bot.sendMessage(chatId, "⚠️ Usage: /addadmin 123456789 500");
     }
 
     try {
         await AdminModel.create({ userId: newAdminId, credits: credits });
-        bot.sendMessage(chatId, `✅ Added \`${newAdminId}\` with **${credits}** credits!`, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, `✅ Added ${newAdminId} with ${credits} credits!`);
     } catch (e) {
-        bot.sendMessage(chatId, `⚠️ User already admin or DB error.`);
+        bot.sendMessage(chatId, "⚠️ User already admin or DB error.");
     }
 });
 
@@ -687,12 +754,12 @@ bot.onText(/\/addcredits(?: (.+))?/, async (msg, match) => {
     const chatId = msg.from.id;
     if (chatId !== MAIN_OWNER_ID) return bot.sendMessage(chatId, "❌ Sirf Main Owner!");
 
-    const input = match[1] ? match[1].trim().split(" ") : [];
+    const input = match[1] ? match[1].trim().split(/\s+/) : [];
     const targetId = parseInt(input[0]);
     const addAmt = parseInt(input[1]);
 
     if (!targetId || isNaN(targetId) || isNaN(addAmt)) {
-        return bot.sendMessage(chatId, "⚠️ Usage: `/addcredits 123456789 100`", { parse_mode: 'Markdown' });
+        return bot.sendMessage(chatId, "⚠️ Usage: /addcredits 123456789 100");
     }
 
     try {
@@ -702,12 +769,12 @@ bot.onText(/\/addcredits(?: (.+))?/, async (msg, match) => {
             { new: true }
         );
         if (adminData) {
-            bot.sendMessage(chatId, `✅ Added ${addAmt} credits to \`${targetId}\`.\n💰 New: **${adminData.credits}**`, { parse_mode: 'Markdown' });
+            bot.sendMessage(chatId, `✅ Added ${addAmt} credits to ${targetId}.\n💰 New: ${adminData.credits}`);
         } else {
-            bot.sendMessage(chatId, `❌ Admin not found.`);
+            bot.sendMessage(chatId, "❌ Admin not found.");
         }
     } catch (e) {
-        bot.sendMessage(chatId, `⚠️ Error updating credits.`);
+        bot.sendMessage(chatId, "⚠️ Error updating credits.");
     }
 });
 
@@ -718,18 +785,18 @@ bot.onText(/\/deladmin(?: (.+))?/, async (msg, match) => {
 
     const targetId = parseInt(match[1]);
     if (!targetId || isNaN(targetId)) {
-        return bot.sendMessage(chatId, "⚠️ Usage: `/deladmin 123456789`", { parse_mode: 'Markdown' });
+        return bot.sendMessage(chatId, "⚠️ Usage: /deladmin 123456789");
     }
 
     try {
         const deleted = await AdminModel.findOneAndDelete({ userId: targetId });
         if (deleted) {
-            bot.sendMessage(chatId, `✅ Removed \`${targetId}\` from Admins.`, { parse_mode: 'Markdown' });
+            bot.sendMessage(chatId, `✅ Removed ${targetId} from Admins.`);
         } else {
-            bot.sendMessage(chatId, `❌ Admin not found.`);
+            bot.sendMessage(chatId, "❌ Admin not found.");
         }
     } catch (e) {
-        bot.sendMessage(chatId, `⚠️ Error removing admin.`);
+        bot.sendMessage(chatId, "⚠️ Error removing admin.");
     }
 });
 
@@ -740,77 +807,18 @@ bot.onText(/\/adminlist/, async (msg) => {
 
     try {
         const admins = await AdminModel.find({});
-        let msgText = `👑 **Main Owner:** \`${MAIN_OWNER_ID}\`\n\n🛡️ **Admins:**\n`;
+        let msgText = `👑 Main Owner: ${MAIN_OWNER_ID}\n\n🛡️ Admins:\n`;
 
         if (admins.length === 0) {
             msgText += "No sub-admins.";
         } else {
             admins.forEach((adm, i) => {
-                msgText += `${i + 1}. \`${adm.userId}\` | Credits: **${adm.credits}**\n`;
+                msgText += `${i + 1}. ${adm.userId} | Credits: ${adm.credits}\n`;
             });
         }
-        bot.sendMessage(chatId, msgText, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, msgText);
     } catch (e) {
-        bot.sendMessage(chatId, `⚠️ Error fetching admin list.`);
-    }
-});
-
-// --- SINGLE KEY GEN ---
-bot.onText(/\/gen(?: (.+))?/, async (msg, match) => {
-    const chatId = msg.from.id;
-    if (!(await isAdmin(chatId))) return bot.sendMessage(chatId, "❌ Unauthorized!");
-
-    let inputArg = match[1] ? match[1].trim() : "";
-    let customKey = "";
-    let days = 30;
-
-    if (inputArg) {
-        const parts = inputArg.split(" ");
-        if (parts.length === 2) {
-            customKey = parts[0].toUpperCase();
-            days = parseInt(parts[1]) || 30;
-        } else if (!isNaN(parts[0])) {
-            days = parseInt(parts[0]) || 30;
-        } else {
-            customKey = parts[0].toUpperCase();
-        }
-    }
-
-    const requiredCredits = days;
-
-    if (chatId !== MAIN_OWNER_ID) {
-        try {
-            const adminData = await AdminModel.findOne({ userId: chatId });
-            if (!adminData || adminData.credits < requiredCredits) {
-                const currentCreds = adminData ? adminData.credits : 0;
-                return bot.sendMessage(chatId, `❌ **Insufficient Credits!**\nNeed: **${requiredCredits}**\nHave: **${currentCreds}**`, { parse_mode: 'Markdown' });
-            }
-            adminData.credits -= requiredCredits;
-            await adminData.save();
-        } catch (e) {
-            return bot.sendMessage(chatId, `⚠️ DB error.`);
-        }
-    }
-
-    if (!customKey) {
-        customKey = generateRandomM1Key();
-    }
-
-    const expiryTime = Date.now() + (days * 24 * 60 * 60 * 1000);
-    try {
-        await KeyModel.create({ key: customKey, panel: 'DEFAULT', expiry: expiryTime, createdBy: chatId, hwid: null, isPaused: false });
-
-        let successMsg = `✅ **Key Generated!**\n\n🏷️ Panel: **DEFAULT**\n🔑 Key: \`${customKey}\`\n⏳ Validity: **${days} Days**\n💰 Deducted: **-${requiredCredits}**`;
-        if (chatId !== MAIN_OWNER_ID) {
-            const updatedAdmin = await AdminModel.findOne({ userId: chatId });
-            successMsg += `\n💳 Remaining: **${updatedAdmin.credits}**`;
-        }
-        bot.sendMessage(chatId, successMsg, { parse_mode: 'Markdown' });
-    } catch (e) {
-        if (chatId !== MAIN_OWNER_ID) {
-            await AdminModel.findOneAndUpdate({ userId: chatId }, { $inc: { credits: requiredCredits } });
-        }
-        bot.sendMessage(chatId, `⚠️ Key already exists! (Credits refunded)`);
+        bot.sendMessage(chatId, "⚠️ Error fetching admin list.");
     }
 });
 
@@ -823,11 +831,11 @@ bot.onText(/\/reset (.+)/, async (msg, match) => {
     try {
         const updated = await KeyModel.findOneAndUpdate({ key: targetKey }, { hwid: null }, { new: true });
         if (updated) {
-            bot.sendMessage(chatId, `✅ HWID Reset!\nKey \`${targetKey}\` unlocked.`, { parse_mode: 'Markdown' });
+            bot.sendMessage(chatId, `✅ HWID Reset!\nKey ${targetKey} unlocked.`);
         } else {
-            bot.sendMessage(chatId, `❌ Key not found!`);
+            bot.sendMessage(chatId, "❌ Key not found!");
         }
-    } catch (e) { bot.sendMessage(chatId, `⚠️ Error.`); }
+    } catch (e) { bot.sendMessage(chatId, "⚠️ Error."); }
 });
 
 // --- MY KEYS ---
@@ -839,15 +847,15 @@ bot.onText(/\/mykeys/, async (msg) => {
         const keys = await KeyModel.find({ createdBy: chatId }).sort({ expiry: -1 }).limit(20);
         if (keys.length === 0) return bot.sendMessage(chatId, "📂 No keys yet.");
 
-        let message = `📋 **YOUR KEYS (Last 20):**\n\n`;
+        let message = "📋 YOUR KEYS (Last 20):\n\n";
         keys.forEach((k, i) => {
             const status = k.isPaused ? "⏸️" : (Date.now() > k.expiry) ? "🔴" : "🟢";
             const lock = k.hwid ? "🔒" : "🔓";
-            message += `${i + 1}. \`${k.key}\` [${k.panel || 'DEFAULT'}] | ${status} ${lock}\n`;
+            message += `${i + 1}. ${k.key} [${k.panel || 'DEFAULT'}] | ${status} ${lock}\n`;
         });
-        bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, message);
     } catch (e) {
-        bot.sendMessage(chatId, `⚠️ Error.`);
+        bot.sendMessage(chatId, "⚠️ Error.");
     }
 });
 
@@ -866,9 +874,9 @@ bot.onText(/\/pausekeys/, async (msg) => {
             await k.save();
             count++;
         }
-        bot.sendMessage(chatId, `⏸️ **${count} keys paused!** Timers frozen.`, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, `⏸️ ${count} keys paused! Timers frozen.`);
     } catch (e) {
-        bot.sendMessage(chatId, `⚠️ Error.`);
+        bot.sendMessage(chatId, "⚠️ Error.");
     }
 });
 
@@ -888,9 +896,9 @@ bot.onText(/\/unpausekeys/, async (msg) => {
             await k.save();
             count++;
         }
-        bot.sendMessage(chatId, `▶️ **${count} keys resumed!** Timers running.`, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, `▶️ ${count} keys resumed! Timers running.`);
     } catch (e) {
-        bot.sendMessage(chatId, `⚠️ Error.`);
+        bot.sendMessage(chatId, "⚠️ Error.");
     }
 });
 
@@ -905,15 +913,15 @@ bot.onText(/\/resellerstats/, async (msg) => {
             { $sort: { totalKeys: -1 } }
         ]);
 
-        let message = `📊 **RESELLER STATS:**\n\n`;
+        let message = "📊 RESELLER STATS:\n\n";
         stats.forEach((st, idx) => {
             const isOwner = (st._id === MAIN_OWNER_ID);
-            const nameLabel = isOwner ? "Main Owner" : `Admin \`${st._id}\``;
-            message += `${idx + 1}. ${nameLabel} — **${st.totalKeys} keys**\n`;
+            const nameLabel = isOwner ? "Main Owner" : `Admin ${st._id}`;
+            message += `${idx + 1}. ${nameLabel} — ${st.totalKeys} keys\n`;
         });
-        bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, message);
     } catch (e) {
-        bot.sendMessage(chatId, `⚠️ Error.`);
+        bot.sendMessage(chatId, "⚠️ Error.");
     }
 });
 
@@ -924,22 +932,22 @@ bot.onText(/\/resellerkeys(?: (.+))?/, async (msg, match) => {
 
     const resellerId = parseInt(match[1]);
     if (!resellerId || isNaN(resellerId)) {
-        return bot.sendMessage(chatId, "⚠️ Usage: `/resellerkeys 123456789`", { parse_mode: 'Markdown' });
+        return bot.sendMessage(chatId, "⚠️ Usage: /resellerkeys 123456789");
     }
 
     try {
         const keys = await KeyModel.find({ createdBy: resellerId }).sort({ expiry: -1 }).limit(25);
-        if (keys.length === 0) return bot.sendMessage(chatId, `📂 No keys.`);
+        if (keys.length === 0) return bot.sendMessage(chatId, "📂 No keys.");
 
-        let message = `📋 **Keys by \`${resellerId}\` (Last 25):**\n\n`;
+        let message = `📋 Keys by ${resellerId} (Last 25):\n\n`;
         keys.forEach((k, i) => {
             const status = k.isPaused ? "⏸️" : (Date.now() > k.expiry) ? "🔴" : "🟢";
             const lock = k.hwid ? "🔒" : "🔓";
-            message += `${i + 1}. \`${k.key}\` [${k.panel || 'DEFAULT'}] (${status} ${lock})\n`;
+            message += `${i + 1}. ${k.key} [${k.panel || 'DEFAULT'}] (${status} ${lock})\n`;
         });
-        bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, message);
     } catch (e) {
-        bot.sendMessage(chatId, `⚠️ Error.`);
+        bot.sendMessage(chatId, "⚠️ Error.");
     }
 });
 
@@ -950,14 +958,14 @@ bot.onText(/\/resellerdelkeys(?: (.+))?/, async (msg, match) => {
 
     const resellerId = parseInt(match[1]);
     if (!resellerId || isNaN(resellerId)) {
-        return bot.sendMessage(chatId, "⚠️ Usage: `/resellerdelkeys 123456789`", { parse_mode: 'Markdown' });
+        return bot.sendMessage(chatId, "⚠️ Usage: /resellerdelkeys 123456789");
     }
 
     try {
         const result = await KeyModel.deleteMany({ createdBy: resellerId });
-        bot.sendMessage(chatId, `✅ Deleted **${result.deletedCount}** keys of \`${resellerId}\`.`, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, `✅ Deleted ${result.deletedCount} keys of ${resellerId}.`);
     } catch (e) {
-        bot.sendMessage(chatId, `⚠️ Error.`);
+        bot.sendMessage(chatId, "⚠️ Error.");
     }
 });
 
@@ -968,9 +976,9 @@ bot.onText(/\/delallkeys/, async (msg) => {
 
     try {
         const result = await KeyModel.deleteMany({});
-        bot.sendMessage(chatId, `🗑️ **Deleted ${result.deletedCount} keys!**`, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, `🗑️ Deleted ${result.deletedCount} keys!`);
     } catch (e) {
-        bot.sendMessage(chatId, `⚠️ Error.`);
+        bot.sendMessage(chatId, "⚠️ Error.");
     }
 });
 
@@ -987,9 +995,9 @@ bot.onText(/\/deloldkeys/, async (msg) => {
                 { hwid: null }
             ]
         });
-        bot.sendMessage(chatId, `🧹 **Removed ${result.deletedCount} old/unused keys!**`, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, `🧹 Removed ${result.deletedCount} old/unused keys!`);
     } catch (e) {
-        bot.sendMessage(chatId, `⚠️ Error.`);
+        bot.sendMessage(chatId, "⚠️ Error.");
     }
 });
 
@@ -1002,15 +1010,15 @@ bot.onText(/\/allkeys/, async (msg) => {
         const keys = await KeyModel.find({}).sort({ expiry: -1 }).limit(25);
         if (keys.length === 0) return bot.sendMessage(chatId, "📂 No keys.");
 
-        let message = `📋 **ALL RECENT KEYS (Max 25):**\n\n`;
+        let message = "📋 ALL RECENT KEYS (Max 25):\n\n";
         keys.forEach((k, i) => {
             const status = k.isPaused ? "⏸️" : (Date.now() > k.expiry) ? "🔴" : "🟢";
             const lock = k.hwid ? "🔒" : "🔓";
-            message += `${i + 1}. \`${k.key}\` [${k.panel || 'DEFAULT'}] (${status} ${lock}) [\`${k.createdBy}\`]\n`;
+            message += `${i + 1}. ${k.key} [${k.panel || 'DEFAULT'}] (${status} ${lock}) [${k.createdBy}]\n`;
         });
-        bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, message);
     } catch (e) {
-        bot.sendMessage(chatId, `⚠️ Error.`);
+        bot.sendMessage(chatId, "⚠️ Error.");
     }
 });
 
@@ -1023,12 +1031,12 @@ bot.onText(/\/delkey (.+)/, async (msg, match) => {
     try {
         const deleted = await KeyModel.findOneAndDelete({ key: targetKey });
         if (deleted) {
-            bot.sendMessage(chatId, `✅ Deleted \`${targetKey}\`!`, { parse_mode: 'Markdown' });
+            bot.sendMessage(chatId, `✅ Deleted ${targetKey}!`);
         } else {
-            bot.sendMessage(chatId, `❌ Key not found.`);
+            bot.sendMessage(chatId, "❌ Key not found.");
         }
     } catch (e) {
-        bot.sendMessage(chatId, `⚠️ Error.`);
+        bot.sendMessage(chatId, "⚠️ Error.");
     }
 });
 
@@ -1046,18 +1054,18 @@ bot.onText(/\/systemstats/, async (msg) => {
         const totalAdmins = await AdminModel.countDocuments();
         const maintenanceStatus = await isMaintenanceMode();
 
-        let statsMsg = `📊 **SYSTEM STATS** 📊\n\n`;
-        statsMsg += `🔧 Maintenance: **${maintenanceStatus ? '🔒 ON' : '🔓 OFF'}**\n`;
-        statsMsg += `📦 Total Keys: **${totalKeys}**\n`;
-        statsMsg += `🟢 Active: **${activeKeys}**\n`;
-        statsMsg += `⏸️ Paused: **${pausedKeysCount}**\n`;
-        statsMsg += `🔴 Expired: **${expiredKeys}**\n`;
-        statsMsg += `🔒 Locked: **${lockedKeys}**\n`;
-        statsMsg += `👥 Admins: **${totalAdmins}**\n`;
+        let statsMsg = "📊 SYSTEM STATS 📊\n\n";
+        statsMsg += `🔧 Maintenance: ${maintenanceStatus ? '🔒 ON' : '🔓 OFF'}\n`;
+        statsMsg += `📦 Total Keys: ${totalKeys}\n`;
+        statsMsg += `🟢 Active: ${activeKeys}\n`;
+        statsMsg += `⏸️ Paused: ${pausedKeysCount}\n`;
+        statsMsg += `🔴 Expired: ${expiredKeys}\n`;
+        statsMsg += `🔒 Locked: ${lockedKeys}\n`;
+        statsMsg += `👥 Admins: ${totalAdmins}\n`;
 
-        bot.sendMessage(chatId, statsMsg, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, statsMsg);
     } catch (e) {
-        bot.sendMessage(chatId, `⚠️ Error.`);
+        bot.sendMessage(chatId, "⚠️ Error.");
     }
 });
 
@@ -1068,7 +1076,7 @@ bot.onText(/\/broadcast(?: (.+))?/, async (msg, match) => {
 
     const broadcastMsg = match[1] ? match[1].trim() : "";
     if (!broadcastMsg) {
-        return bot.sendMessage(chatId, "⚠️ Usage: `/broadcast Your message`", { parse_mode: 'Markdown' });
+        return bot.sendMessage(chatId, "⚠️ Usage: /broadcast Your message");
     }
 
     try {
@@ -1076,13 +1084,13 @@ bot.onText(/\/broadcast(?: (.+))?/, async (msg, match) => {
         let count = 0;
         for (const admin of admins) {
             try {
-                await bot.sendMessage(admin.userId, `📢 **ANNOUNCEMENT:**\n\n${broadcastMsg}`, { parse_mode: 'Markdown' });
+                await bot.sendMessage(admin.userId, `📢 ANNOUNCEMENT:\n\n${broadcastMsg}`);
                 count++;
             } catch (err) {}
         }
-        bot.sendMessage(chatId, `✅ Sent to **${count}** admins!`, { parse_mode: 'Markdown' });
+        bot.sendMessage(chatId, `✅ Sent to ${count} admins!`);
     } catch (e) {
-        bot.sendMessage(chatId, `⚠️ Error.`);
+        bot.sendMessage(chatId, "⚠️ Error.");
     }
 });
 
