@@ -37,6 +37,7 @@ mongoose.connect(MONGO_URI)
 
 const keySchema = new mongoose.Schema({
     key: { type: String, required: true, unique: true },
+    panel: { type: String, default: 'DEFAULT' }, // 'DEFAULT' = purana panel, 'PAID_V2' = naya panel
     expiry: { type: Number, required: true },
     createdBy: { type: Number, required: true },
     hwid: { type: String, default: null },
@@ -59,7 +60,7 @@ const freeSessionSchema = new mongoose.Schema({
     token: { type: String, required: true },
     deviceHash: { type: String, default: null },
     deviceInfo: { type: Object, default: null },
-    status: { type: String, default: 'pending' }, // pending -> claimed
+    status: { type: String, default: 'pending' },
     issuedKey: { type: String, default: null },
     createdAt: { type: Number, default: () => Date.now() },
     expiresAt: { type: Number, required: true }
@@ -144,6 +145,7 @@ async function createTwelveHourKeyInDb() {
         try {
             await KeyModel.create({
                 key: newKey,
+                panel: 'DEFAULT',
                 expiry: expiryTime,
                 createdBy: MAIN_OWNER_ID,
                 hwid: null,
@@ -243,7 +245,6 @@ app.post('/api/free-key/claim', async (req, res) => {
             return res.json({ success: false, message: 'Device info missing hai.' });
         }
 
-        // Agar isi exact link ko refresh kare toh is link ki key dikhaye
         if (session.status === 'claimed' && session.issuedKey) {
             return res.json({
                 success: true,
@@ -301,9 +302,10 @@ app.post('/api/free-key/claim', async (req, res) => {
     }
 });
 
-// --- 🔥 VERIFICATION API WITH MAINTENANCE CHECK ---
+// --- 🔥 VERIFICATION API WITH PANEL & MAINTENANCE CHECK ---
 app.post('/verify', async (req, res) => {
-    const { key, hwid } = req.body;
+    const { key, hwid, panel } = req.body;
+    const requestedPanel = (panel && typeof panel === 'string') ? panel.trim().toUpperCase() : 'DEFAULT';
 
     if (!key || !hwid) {
         return res.json({ success: false, message: "Key and HWID are required!" });
@@ -311,9 +313,9 @@ app.post('/verify', async (req, res) => {
 
     try {
         if (await isMaintenanceMode()) {
-            return res.json({ 
-                success: false, 
-                message: "⚠️ MAINTENANCE MODE ⚠️\n\nServer is under maintenance.\nPLEASE WAIT!\n\nTry again later." 
+            return res.json({
+                success: false,
+                message: "⚠️ MAINTENANCE MODE ⚠️\n\nServer is under maintenance.\nPLEASE WAIT!\n\nTry again later."
             });
         }
 
@@ -321,6 +323,14 @@ app.post('/verify', async (req, res) => {
 
         if (!keyData) {
             return res.json({ success: false, message: "Invalid license key!" });
+        }
+
+        const keyPanel = (keyData.panel || 'DEFAULT').toUpperCase();
+        if (keyPanel !== requestedPanel) {
+            return res.json({
+                success: false,
+                message: `Wrong Panel Key!\nThis key belongs to [${keyPanel}] panel, not [${requestedPanel}].`
+            });
         }
 
         if (keyData.isPaused) {
@@ -352,8 +362,9 @@ bot.onText(/\/start/, async (msg) => {
     if (!(await isAdmin(chatId))) return bot.sendMessage(chatId, "❌ Access Denied!");
 
     let helpText = "👑 **M1 BISKUT KEY GENERATOR** 👑\n\n";
-    helpText += "• `/gen [days]` - Generate Key\n";
-    helpText += "• `/gen [KEY] [days]` - Custom Key\n";
+    helpText += "• `/newkey [days]` - Choose Panel & Generate Key\n";
+    helpText += "• `/gen [days]` - Generate Key (DEFAULT panel)\n";
+    helpText += "• `/gen [KEY] [days]` - Custom Key (DEFAULT panel)\n";
     helpText += "• `/mykeys` - View your keys\n";
     helpText += "• `/reset [KEY]` - Reset HWID\n";
     helpText += "• `/mycredits` - Check credits\n";
@@ -393,6 +404,82 @@ bot.onText(/\/start/, async (msg) => {
     }
 
     bot.sendMessage(chatId, helpText, { parse_mode: 'Markdown' });
+});
+
+// --- 🔥 PANEL SELECTION KEY GENERATOR (/newkey) ---
+const pendingPanelKey = new Map();
+
+bot.onText(/\/newkey(?: (.+))?/, async (msg, match) => {
+    const chatId = msg.from.id;
+    if (!(await isAdmin(chatId))) return bot.sendMessage(chatId, "❌ Unauthorized!");
+
+    const days = parseInt(match[1]) || 30;
+    const reqId = `${chatId}_${Date.now()}`;
+    pendingPanelKey.set(reqId, { chatId, days });
+
+    bot.sendMessage(
+        chatId,
+        `🔑 **Key Generate (${days} Days)**\n\nKis panel ki key banani hai?`,
+        {
+            parse_mode: 'Markdown',
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        { text: "📦 Purana Panel (DEFAULT)", callback_data: `genpanel:DEFAULT:${reqId}` },
+                        { text: "💎 Naya Panel (PAID_V2)", callback_data: `genpanel:PAID_V2:${reqId}` }
+                    ]
+                ]
+            }
+        }
+    );
+});
+
+bot.on('callback_query', async (query) => {
+    const data = query.data || "";
+    if (!data.startsWith("genpanel:")) return;
+
+    const [, selectedPanel, reqId] = data.split(":");
+    const pending = pendingPanelKey.get(reqId);
+    const chatId = query.message.chat.id;
+
+    if (!pending) {
+        return bot.answerCallbackQuery(query.id, { text: "Request expire ho gaya, /newkey dobara bhejein." });
+    }
+
+    pendingPanelKey.delete(reqId);
+    const days = pending.days;
+    const requiredCredits = days;
+
+    if (chatId !== MAIN_OWNER_ID) {
+        const adminData = await AdminModel.findOne({ userId: chatId });
+        if (!adminData || adminData.credits < requiredCredits) {
+            await bot.answerCallbackQuery(query.id, { text: "Insufficient credits!" });
+            return bot.sendMessage(chatId, `❌ Need **${requiredCredits}** credits.`, { parse_mode: 'Markdown' });
+        }
+        adminData.credits -= requiredCredits;
+        await adminData.save();
+    }
+
+    const newKey = 'M1-' + Math.random().toString(36).substring(2, 6).toUpperCase() +
+                   '-' + Math.random().toString(36).substring(2, 6).toUpperCase() +
+                   '-' + Math.random().toString(36).substring(2, 6).toUpperCase();
+    const expiryTime = Date.now() + (days * 24 * 60 * 60 * 1000);
+
+    await KeyModel.create({
+        key: newKey,
+        panel: selectedPanel,
+        expiry: expiryTime,
+        createdBy: chatId,
+        hwid: null,
+        isPaused: false
+    });
+
+    await bot.answerCallbackQuery(query.id, { text: `${selectedPanel} key ban gayi!` });
+    bot.sendMessage(
+        chatId,
+        `✅ **Key Generated!**\n\n🏷️ Panel: **${selectedPanel}**\n🔑 Key: \`${newKey}\`\n⏳ Validity: **${days} Days**`,
+        { parse_mode: 'Markdown' }
+    );
 });
 
 // --- 🔥 OWNER ONLY: MAINTENANCE MODE CONTROL ---
@@ -464,6 +551,7 @@ bot.onText(/\/bulk(?: (.+))?/, async (msg, match) => {
                 generatedKeys.push(newKey);
                 keysBatch.push({
                     key: newKey,
+                    panel: 'DEFAULT',
                     expiry: expiryTime,
                     createdBy: chatId,
                     hwid: null,
@@ -671,9 +759,9 @@ bot.onText(/\/gen(?: (.+))?/, async (msg, match) => {
 
     const expiryTime = Date.now() + (days * 24 * 60 * 60 * 1000);
     try {
-        await KeyModel.create({ key: customKey, expiry: expiryTime, createdBy: chatId, hwid: null, isPaused: false });
+        await KeyModel.create({ key: customKey, panel: 'DEFAULT', expiry: expiryTime, createdBy: chatId, hwid: null, isPaused: false });
 
-        let successMsg = `✅ **Key Generated!**\n\n🔑 Key: \`${customKey}\`\n⏳ Validity: **${days} Days**\n💰 Deducted: **-${requiredCredits}**`;
+        let successMsg = `✅ **Key Generated!**\n\n🏷️ Panel: **DEFAULT**\n🔑 Key: \`${customKey}\`\n⏳ Validity: **${days} Days**\n💰 Deducted: **-${requiredCredits}**`;
         if (chatId !== MAIN_OWNER_ID) {
             const updatedAdmin = await AdminModel.findOne({ userId: chatId });
             successMsg += `\n💳 Remaining: **${updatedAdmin.credits}**`;
@@ -716,7 +804,7 @@ bot.onText(/\/mykeys/, async (msg) => {
         keys.forEach((k, i) => {
             const status = k.isPaused ? "⏸️" : (Date.now() > k.expiry) ? "🔴" : "🟢";
             const lock = k.hwid ? "🔒" : "🔓";
-            message += `${i + 1}. \`${k.key}\` | ${status} ${lock}\n`;
+            message += `${i + 1}. \`${k.key}\` [${k.panel || 'DEFAULT'}] | ${status} ${lock}\n`;
         });
         bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
     } catch (e) {
@@ -808,7 +896,7 @@ bot.onText(/\/resellerkeys(?: (.+))?/, async (msg, match) => {
         keys.forEach((k, i) => {
             const status = k.isPaused ? "⏸️" : (Date.now() > k.expiry) ? "🔴" : "🟢";
             const lock = k.hwid ? "🔒" : "🔓";
-            message += `${i + 1}. \`${k.key}\` (${status} ${lock})\n`;
+            message += `${i + 1}. \`${k.key}\` [${k.panel || 'DEFAULT'}] (${status} ${lock})\n`;
         });
         bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
     } catch (e) {
@@ -879,7 +967,7 @@ bot.onText(/\/allkeys/, async (msg) => {
         keys.forEach((k, i) => {
             const status = k.isPaused ? "⏸️" : (Date.now() > k.expiry) ? "🔴" : "🟢";
             const lock = k.hwid ? "🔒" : "🔓";
-            message += `${i + 1}. \`${k.key}\` (${status} ${lock}) [\`${k.createdBy}\`]\n`;
+            message += `${i + 1}. \`${k.key}\` [${k.panel || 'DEFAULT'}] (${status} ${lock}) [\`${k.createdBy}\`]\n`;
         });
         bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
     } catch (e) {
