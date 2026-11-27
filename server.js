@@ -130,6 +130,13 @@ async function checkDeviceCooldown(deviceHash) {
     return { blocked: false, record };
 }
 
+function generateRandomM1Key() {
+    const p1 = Math.random().toString(36).substring(2, 6).toUpperCase().padEnd(4, 'X');
+    const p2 = Math.random().toString(36).substring(2, 6).toUpperCase().padEnd(4, 'X');
+    const p3 = Math.random().toString(36).substring(2, 6).toUpperCase().padEnd(4, 'X');
+    return `M1-${p1}-${p2}-${p3}`;
+}
+
 function makeUnique12hKey() {
     const p1 = crypto.randomBytes(2).toString('hex').toUpperCase();
     const p2 = crypto.randomBytes(2).toString('hex').toUpperCase();
@@ -410,15 +417,16 @@ bot.onText(/\/start/, async (msg) => {
 const pendingPanelKey = new Map();
 
 bot.onText(/\/newkey(?: (.+))?/, async (msg, match) => {
-    const chatId = msg.from.id;
-    if (!(await isAdmin(chatId))) return bot.sendMessage(chatId, "❌ Unauthorized!");
+    const userId = msg.from.id;
+    const replyChatId = msg.chat.id;
+    if (!(await isAdmin(userId))) return bot.sendMessage(replyChatId, "❌ Unauthorized!");
 
-    const days = parseInt(match[1]) || 30;
-    const reqId = `${chatId}_${Date.now()}`;
-    pendingPanelKey.set(reqId, { chatId, days });
+    const days = parseInt(match && match[1]) || 30;
+    const reqId = `${userId}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    pendingPanelKey.set(reqId, { userId, replyChatId, days, createdAt: Date.now() });
 
-    bot.sendMessage(
-        chatId,
+    await bot.sendMessage(
+        replyChatId,
         `🔑 **Key Generate (${days} Days)**\n\nKis panel ki key banani hai?`,
         {
             parse_mode: 'Markdown',
@@ -435,51 +443,87 @@ bot.onText(/\/newkey(?: (.+))?/, async (msg, match) => {
 });
 
 bot.on('callback_query', async (query) => {
-    const data = query.data || "";
-    if (!data.startsWith("genpanel:")) return;
+    try {
+        const data = query.data || "";
+        if (!data.startsWith("genpanel:")) return;
 
-    const [, selectedPanel, reqId] = data.split(":");
-    const pending = pendingPanelKey.get(reqId);
-    const chatId = query.message.chat.id;
+        const parts = data.split(":");
+        const selectedPanel = parts[1];
+        const reqId = parts.slice(2).join(":");
 
-    if (!pending) {
-        return bot.answerCallbackQuery(query.id, { text: "Request expire ho gaya, /newkey dobara bhejein." });
-    }
+        const clickerId = query.from.id;
+        const replyChatId = query.message ? query.message.chat.id : clickerId;
 
-    pendingPanelKey.delete(reqId);
-    const days = pending.days;
-    const requiredCredits = days;
-
-    if (chatId !== MAIN_OWNER_ID) {
-        const adminData = await AdminModel.findOne({ userId: chatId });
-        if (!adminData || adminData.credits < requiredCredits) {
-            await bot.answerCallbackQuery(query.id, { text: "Insufficient credits!" });
-            return bot.sendMessage(chatId, `❌ Need **${requiredCredits}** credits.`, { parse_mode: 'Markdown' });
+        const pending = pendingPanelKey.get(reqId);
+        if (!pending) {
+            return bot.answerCallbackQuery(query.id, {
+                text: "Request expire ho gaya, /newkey dobara bhejein.",
+                show_alert: false
+            });
         }
-        adminData.credits -= requiredCredits;
-        await adminData.save();
+
+        if (pending.userId !== clickerId && clickerId !== MAIN_OWNER_ID) {
+            return bot.answerCallbackQuery(query.id, {
+                text: "Yeh button sirf request karne wale admin ke liye hai.",
+                show_alert: true
+            });
+        }
+
+        pendingPanelKey.delete(reqId);
+        const days = pending.days;
+        const requiredCredits = days;
+
+        if (clickerId !== MAIN_OWNER_ID) {
+            const adminData = await AdminModel.findOne({ userId: clickerId });
+            if (!adminData || adminData.credits < requiredCredits) {
+                await bot.answerCallbackQuery(query.id, { text: "Insufficient credits!" });
+                return bot.sendMessage(replyChatId, `❌ Need **${requiredCredits}** credits.`, { parse_mode: 'Markdown' });
+            }
+            adminData.credits -= requiredCredits;
+            await adminData.save();
+        }
+
+        let newKey = "";
+        let saved = false;
+        const expiryTime = Date.now() + (days * 24 * 60 * 60 * 1000);
+
+        for (let attempt = 0; attempt < 5; attempt++) {
+            newKey = generateRandomM1Key();
+            try {
+                await KeyModel.create({
+                    key: newKey,
+                    panel: selectedPanel,
+                    expiry: expiryTime,
+                    createdBy: clickerId,
+                    hwid: null,
+                    isPaused: false,
+                    pausedRemainingTime: 0
+                });
+                saved = true;
+                break;
+            } catch (err) {
+                if (err.code !== 11000) throw err;
+            }
+        }
+
+        if (!saved) {
+            if (clickerId !== MAIN_OWNER_ID) {
+                await AdminModel.findOneAndUpdate({ userId: clickerId }, { $inc: { credits: requiredCredits } });
+            }
+            await bot.answerCallbackQuery(query.id, { text: "Key generate nahi ho payi!" });
+            return bot.sendMessage(replyChatId, "⚠️ Unique key generate karne mein problem aayi, dobara try karo.");
+        }
+
+        await bot.answerCallbackQuery(query.id, { text: `${selectedPanel} key ban gayi!` });
+        await bot.sendMessage(
+            replyChatId,
+            `✅ **Key Generated!**\n\n🏷️ Panel: **${selectedPanel}**\n🔑 Key: \`${newKey}\`\n⏳ Validity: **${days} Days**`,
+            { parse_mode: 'Markdown' }
+        );
+    } catch (err) {
+        console.error("Callback query error:", err);
+        bot.answerCallbackQuery(query.id, { text: "Error aaya, console check karo." }).catch(() => {});
     }
-
-    const newKey = 'M1-' + Math.random().toString(36).substring(2, 6).toUpperCase() +
-                   '-' + Math.random().toString(36).substring(2, 6).toUpperCase() +
-                   '-' + Math.random().toString(36).substring(2, 6).toUpperCase();
-    const expiryTime = Date.now() + (days * 24 * 60 * 60 * 1000);
-
-    await KeyModel.create({
-        key: newKey,
-        panel: selectedPanel,
-        expiry: expiryTime,
-        createdBy: chatId,
-        hwid: null,
-        isPaused: false
-    });
-
-    await bot.answerCallbackQuery(query.id, { text: `${selectedPanel} key ban gayi!` });
-    bot.sendMessage(
-        chatId,
-        `✅ **Key Generated!**\n\n🏷️ Panel: **${selectedPanel}**\n🔑 Key: \`${newKey}\`\n⏳ Validity: **${days} Days**`,
-        { parse_mode: 'Markdown' }
-    );
 });
 
 // --- 🔥 OWNER ONLY: MAINTENANCE MODE CONTROL ---
@@ -541,10 +585,7 @@ bot.onText(/\/bulk(?: (.+))?/, async (msg, match) => {
         const usedSet = new Set();
 
         while (generatedKeys.length < count) {
-            const randomPart1 = Math.random().toString(36).substring(2, 6).toUpperCase().padEnd(4, 'X');
-            const randomPart2 = Math.random().toString(36).substring(2, 6).toUpperCase().padEnd(4, 'X');
-            const randomPart3 = Math.random().toString(36).substring(2, 6).toUpperCase().padEnd(4, 'X');
-            const newKey = `M1-${randomPart1}-${randomPart2}-${randomPart3}`;
+            const newKey = generateRandomM1Key();
 
             if (!usedSet.has(newKey)) {
                 usedSet.add(newKey);
@@ -752,9 +793,7 @@ bot.onText(/\/gen(?: (.+))?/, async (msg, match) => {
     }
 
     if (!customKey) {
-        customKey = 'M1-' + Math.random().toString(36).substring(2, 6).toUpperCase() +
-                    '-' + Math.random().toString(36).substring(2, 6).toUpperCase() +
-                    '-' + Math.random().toString(36).substring(2, 6).toUpperCase();
+        customKey = generateRandomM1Key();
     }
 
     const expiryTime = Date.now() + (days * 24 * 60 * 60 * 1000);
